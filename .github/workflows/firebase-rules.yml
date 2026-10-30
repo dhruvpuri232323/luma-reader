@@ -1,0 +1,35 @@
+name: Deploy Firebase security rules
+
+# Optional. Publishes firebase/firestore.rules (and storage.rules when cloud PDFs
+# are on) whenever they change. Pasting the rules into the Firebase console by
+# hand works just as well — see docs/SETUP.md.
+#
+# Setup:
+#   • Repository variable  FIREBASE_PROJECT_ID  = your project id
+#   • Repository secret    FIREBASE_SERVICE_ACCOUNT = JSON key of a service account
+#     with the "Firebase Rules Admin" role (Google Cloud console → IAM → Service accounts)
+# Without the variable this workflow is skipped.
+on:
+  push:
+    branches: [main]
+    paths: ["firebase/**", "firebase.json"]
+  workflow_dispatch:
+
+jobs:
+  rules:
+    if: ${{ vars.FIREBASE_PROJECT_ID != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Deploy rules
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          echo "$SA" > "$RUNNER_TEMP/sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
+          ONLY="firestore:rules"
+          if grep -q "ENABLE_CLOUD_PDFS = true" js/firebase-config.js; then ONLY="$ONLY,storage"; fi
+          npx --yes firebase-tools deploy --only "$ONLY" --project "${{ vars.FIREBASE_PROJECT_ID }}" --non-interactive

@@ -1,0 +1,15 @@
+rules_version = '2';
+
+// Optional: original PDF files at users/{uid}/pdfs/{sha256}.pdf
+// Only the owner can read, upload (PDFs up to 200 MB) or delete them.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /users/{uid}/pdfs/{file} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null
+                            && request.auth.uid == uid
+                            && request.resource.size < 200 * 1024 * 1024
+                            && request.resource.contentType == 'application/pdf';
+    }
+  }
+}

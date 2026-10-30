@@ -1,0 +1,16 @@
+{
+  "name": "luma-reader",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PDF reader with instant definitions, highlights and notes, synced between phone and laptop via Firebase.",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "check": "for f in $(find js -name '*.js') sw.js; do node --check \"$f\" || exit 1; done && echo 'Syntax OK'",
+    "test": "node tests/e2e.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.50.0"
+  },
+  "license": "MIT"
+}
