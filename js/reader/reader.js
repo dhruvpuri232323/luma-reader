@@ -92,11 +92,16 @@ export function mountReader(root) {
     if (R.panel) renderPanel();
   });
   bus.on("book-tap-center", (tab) => { if (tab.docId === R.active) setFocus(!R.focus, { quiet: true }); });
+  bus.on("note-last", (docId) => {
+    const last = annotationsFor(docId).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+    if (last) editAnnotation(last);
+  });
   bus.on("book-unavailable", (tab) => { if (tab.docId === R.active) toast("This PDF is scanned page images, so there's no text to set as a book. Showing the original pages."); });
   bus.on("tab-ready", (tab) => {
     if (tab.docId === R.active) { renderActions(); if (R.panel) renderPanel(); }
     setTimeout(() => indexInBackground(tab).catch(() => {}), 2500);
     warmUp();
+    pendingListen(tab);
     // on a phone, PDF pages are tiny: point to Book view once
     if (isNarrow() && tab.kind === "pdf" && !localStorage.getItem("luma.tipBook")) {
       setTimeout(() => {
@@ -157,7 +162,7 @@ export async function openDoc(docId, page) {
     if (!page) tab.recapFrom = lastOpened;
     await tab.load(page);
   } else if (page) tab.goTo(page);
-  if (tab.state === "ready") pendingFind(tab);
+  if (tab.state === "ready") { pendingFind(tab); pendingListen(tab); }
   saveSession();
 }
 
@@ -623,6 +628,15 @@ function drawResults(box, tab) {
 }
 
 /** Arriving from a library-wide search: open this book's search on the same words. */
+/** Arriving from the library's "Listen" button: start reading aloud once the book is open. */
+function pendingListen(tab) {
+  let id = null;
+  try { id = sessionStorage.getItem("luma.autolisten"); } catch {}
+  if (id !== tab.docId || tab.state !== "ready") return;
+  sessionStorage.removeItem("luma.autolisten");
+  setTimeout(() => { if (!player.active && R.active === tab.docId) toggleListen(); }, tab.kind === "pdf" ? 900 : 500);
+}
+
 function pendingFind(tab) {
   let p;
   try { p = JSON.parse(sessionStorage.getItem("luma.find") || "null"); } catch {}
@@ -965,6 +979,9 @@ function wireKeys() {
     if (e.ctrlKey || e.metaKey) return;
     const k = e.key;
     const book = tab.mode === "book";
+    // while listening: Space plays/pauses, Shift+arrows move by sentence
+    if (player.active && k === " ") { e.preventDefault(); player.toggle(); return; }
+    if (player.active && e.shiftKey && (k === "ArrowRight" || k === "ArrowLeft")) { e.preventDefault(); player.skip(k === "ArrowRight" ? 1 : -1); return; }
     if (k === "ArrowRight" || (book && (k === "PageDown" || k === " " || k === "ArrowDown"))) { e.preventDefault(); tab.next(); }
     else if (k === "ArrowLeft" || (book && (k === "PageUp" || k === "ArrowUp"))) { e.preventDefault(); tab.prev(); }
     else if (k === "l" || k === "L") toggleListen();

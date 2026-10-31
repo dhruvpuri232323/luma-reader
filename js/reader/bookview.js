@@ -208,6 +208,9 @@ export class BookView {
         } else if (blk.type === "img") {
           node = el("figure.bk-b.bk-fig", { dataset: { bid: blk.id, page: p, aspect: blk.aspect } }, el("img", { alt: `Page ${p}` }));
           afterHeading = false;
+        } else if (blk.type === "hr") {
+          node = el("div.bk-b.bk-break", { dataset: { bid: blk.id, page: p }, "aria-hidden": "true" });
+          afterHeading = false;
         } else if (blk.type === "quote") {
           node = el("blockquote.bk-b.bk-quote", { dataset: { bid: blk.id, page: p } }, blk.text);
           afterHeading = false;
@@ -223,7 +226,7 @@ export class BookView {
             words += wordCount(blk.text);
             continue;
           }
-          node = el("p.bk-b" + (blk.cont ? ".cont" : "") + (afterHeading ? ".first" : "") + (afterHeading === "chapter" ? ".drop" : ""),
+          node = el("p.bk-b" + (blk.cont ? ".cont" : "") + (afterHeading ? ".first" : "") + (afterHeading === "chapter" && blk.text.length >= 120 && /^[\p{L}\p{N}]/u.test(blk.text) ? ".drop" : ""),
             { dataset: { bid: blk.id, page: p } }, blk.text);
           addNotes(node, blk);
           lastP = node;

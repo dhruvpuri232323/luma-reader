@@ -192,6 +192,7 @@ export class BookModel {
     blocks.forEach((b, i) => {
       b.id = `${p}:${i}`;
       delete b.maxEnd;
+      if (b.type === "p" && !/[\p{L}\p{N}]/u.test(stripMarks(b.text)) && b.text.length <= 12) { b.type = "hr"; b.text = ""; return; } // "* * *"
       if (b.type !== "p" || !b.text.includes(M_OPEN)) return;
       // pull markers out of the text; keep the ones that have a footnote
       let out = "", last = 0;

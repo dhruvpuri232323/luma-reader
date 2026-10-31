@@ -55,6 +55,29 @@ export async function fastModeAvailable() {
   try { return Boolean(navigator.gpu && (await navigator.gpu.requestAdapter())); } catch { return false; }
 }
 export const naturalMode = () => localStorage.getItem("luma.voice.mode") || "standard";
+
+/** What this computer is: used to give the right advice about the fast voice. */
+let infoCache = null;
+export async function deviceInfo() {
+  if (infoCache) return infoCache;
+  const out = { fast: await fastModeAvailable(), arch: "", platform: "", gpu: "" };
+  try {
+    const h = await navigator.userAgentData?.getHighEntropyValues?.(["architecture", "platform"]);
+    out.arch = h?.architecture || "";
+    out.platform = h?.platform || navigator.userAgentData?.platform || "";
+  } catch {}
+  try {
+    const gl = document.createElement("canvas").getContext("webgl");
+    const ext = gl?.getExtension("WEBGL_debug_renderer_info");
+    out.gpu = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || "") : "";
+  } catch {}
+  // Snapdragon (Qualcomm Adreno) laptops run Windows on Arm
+  out.snapdragon = /adreno|qualcomm|snapdragon/i.test(out.gpu) || (out.platform === "Windows" && out.arch === "arm");
+  // the Intel/AMD build of the browser running on an Arm laptop (slow, emulated)
+  out.emulated = out.snapdragon && out.arch === "x86";
+  out.edge = /Edg\//.test(navigator.userAgent);
+  return (infoCache = out);
+}
 export const MODE_SIZE = (m) => MODES[m]?.size || "";
 
 /** How many workers this device can comfortably run at once. */
@@ -63,7 +86,7 @@ function poolSize(mode) {
   const cores = navigator.hardwareConcurrency || 4;
   const mem = navigator.deviceMemory || 8;
   const phone = matchMedia("(pointer: coarse)").matches && innerWidth < 900;
-  let n = Math.max(1, Math.min(3, Math.floor(cores / 2) - 1));
+  let n = Math.max(1, Math.min(cores >= 10 && mem >= 8 ? 4 : 3, Math.floor(cores / 2) - 1));
   if (phone || mem <= 4) n = Math.min(n, 2);
   if (mem <= 2) n = 1;
   return window.__LUMA_TTS_WORKERS__ || n;
@@ -98,7 +121,23 @@ function spawn(mode, onProgress) {
       w.ready = false;
       nat.pool = nat.pool.filter((x) => x !== w);
       if (w.busy) { nat.pending.get(w.busy)?.reject(new Error("voice stopped")); nat.pending.delete(w.busy); }
-      if (!nat.pool.length) { nat.status = "error"; nat.error = "The natural voice stopped."; nat.loading = null; bus.emit("voice-state"); }
+      if (!nat.pool.length) {
+        nat.queue.forEach((j) => j.reject(new Error("voice stopped")));
+        nat.queue = [];
+        nat.loading = null;
+        if (nat.mode === "fast") {
+          // the graphics chip gave up: carry on with the standard voice
+          localStorage.setItem("luma.voice.mode", "standard");
+          nat.status = "none";
+          bus.emit("toast", "The graphics chip stopped working for the voice — switched to the standard voice.");
+          bus.emit("voice-state");
+          loadNatural().catch(() => {});
+          return;
+        }
+        nat.status = "error";
+        nat.error = "The natural voice stopped.";
+        bus.emit("voice-state");
+      }
       pump();
     };
     const m = MODES[mode];

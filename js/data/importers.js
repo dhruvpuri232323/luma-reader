@@ -65,32 +65,98 @@ const clean = (s) => s.replace(/\s+/g, " ").trim();
  * Walk an element and emit blocks. `resolveImg(src)` returns a usable URL (or
  * null to drop the image). `ids` collects element ids → block index (EPUB links).
  */
+const NOTE_LABEL = /^[\[(]?(\d{1,3}|[*†‡§¶]{1,3}|[ivx]{1,4})[\])]?$/i;
+const epubType = (n) => (n.getAttribute?.("epub:type") || n.getAttributeNS?.("http://www.idpf.org/2007/ops", "type") || "") + " " + (n.getAttribute?.("role") || "");
+/** A link or superscript that points at a footnote/endnote ("…in her thrall.¹"). */
+function isNoteRef(node, tag) {
+  const t = (node.textContent || "").trim();
+  if (!NOTE_LABEL.test(t)) return false;
+  if (/noteref/.test(epubType(node))) return true;
+  if (tag === "SUP") return true;
+  if (tag === "A") {
+    const href = node.getAttribute("href") || "";
+    return href.includes("#") && (node.closest?.("sup") || node.querySelector?.("sup") || /note|fn|foot|endn|ref/i.test(node.className + " " + href));
+  }
+  return false;
+}
+const isNoteBody = (node) => /\b(footnote|endnote|rearnote|note|doc-footnote|doc-endnote)\b/.test(epubType(node)) && node.tagName.toUpperCase() === "ASIDE";
+const M_OPEN = "\uE000", M_CLOSE = "\uE001";
+
+/**
+ * HTML → book blocks. Footnote references become markers ({ at, label, href })
+ * instead of stray numbers in the text; scene breaks ("* * *", "—", <hr>)
+ * become breaks; a chapter number and title on two lines become one heading.
+ */
 export function htmlToBlocks(root, { resolveImg = (s) => s, ids = null, keepAsides = false } = {}) {
   const blocks = [];
+  const refs = []; // note references found so far
   let buf = "";
   let bufKind = "p";
   const pendingIds = [];
   const flush = () => {
-    const t = clean(buf);
+    let t = clean(buf);
+    const marks = [];
+    if (t.includes(M_OPEN)) {
+      let out = "", last = 0;
+      const add = (seg) => { out += out.endsWith(" ") && seg.startsWith(" ") ? seg.slice(1) : seg; };
+      for (const m of t.matchAll(/\uE000(\d+)\uE001/g)) {
+        add(t.slice(last, m.index));
+        last = m.index + m[0].length;
+        marks.push({ at: out.length, ...refs[Number(m[1])] });
+      }
+      add(t.slice(last));
+      t = out.trim();
+      const lead = out.length - out.trimStart().length;
+      for (const mk of marks) mk.at = Math.max(0, Math.min(mk.at - lead, t.length));
+    }
     if (t) {
-      const b = { type: bufKind === "li" ? "p" : bufKind, text: bufKind === "li" ? "• " + t : t };
-      blocks.push(b);
+      if (!/[\p{L}\p{N}]/u.test(t) && t.length <= 12) blocks.push({ type: "hr", text: "" }); // "* * *", "—", "⁂"
+      else {
+        const b = { type: bufKind === "li" ? "p" : bufKind, text: bufKind === "li" ? "• " + t : t };
+        if (bufKind === "li") marks.forEach((mk) => { mk.at += 2; });
+        if (marks.length) b.refs = marks;
+        blocks.push(b);
+      }
     }
     if (ids) pendingIds.splice(0).forEach((id) => ids.set(id, Math.max(0, blocks.length - (t ? 1 : 0))));
     buf = "";
-    bufKind = "p";
+    bufKind = quoteDepth ? "quote" : "p";
   };
+  let quoteDepth = 0;
   const walk = (node) => {
-    if (node.nodeType === 3) { buf += node.data; return; }
+    if (node.nodeType === 3) { buf += node.data.replace(/[\uE000\uE001]/g, ""); return; }
     if (node.nodeType !== 1) return;
     const tag = node.tagName.toUpperCase();
+    if (tag === "SVG") {
+      // a cover or picture drawn as SVG: keep its image
+      const im = node.querySelector?.("image");
+      const src = im && (im.getAttribute("xlink:href") || im.getAttributeNS?.("http://www.w3.org/1999/xlink", "href") || im.getAttribute("href"));
+      const url = src && resolveImg(src);
+      if (url) { flush(); blocks.push({ type: "img", src: url, alt: "" }); }
+      return;
+    }
     if (SKIP_TAGS.has(tag) && !(keepAsides && tag === "ASIDE")) return;
     if (node.getAttribute?.("aria-hidden") === "true" || node.hidden) return;
+    if (!keepAsides && isNoteBody(node)) return; // shown as a pop-up instead
     if (node.id && ids) pendingIds.push(node.id);
+    if ((tag === "A" || tag === "SUP") && isNoteRef(node, tag)) {
+      const a = tag === "A" ? node : node.querySelector("a");
+      refs.push({ label: (node.textContent || "").trim().replace(/[[\]()]/g, ""), href: a?.getAttribute("href") || "" });
+      buf += M_OPEN + (refs.length - 1) + M_CLOSE;
+      return;
+    }
     if (/^H[1-6]$/.test(tag)) {
       flush();
-      const t = clean(node.textContent);
-      if (t) blocks.push({ type: "h", level: Number(tag[1]) <= 2 ? 2 : 3, text: t });
+      const t = clean(node.textContent.replace(/[\uE000\uE001]/g, ""));
+      const prev = blocks[blocks.length - 1];
+      if (t && prev?.type === "h" && prev.justNumber) {
+        prev.text = `${prev.text}: ${t}`; // "Chapter 1" + "A Purposeful Life"
+        delete prev.justNumber;
+      } else if (t) {
+        const h = { type: "h", level: Number(tag[1]) <= 2 ? 2 : 3, text: t };
+        if (/^((chapter|part|book|section)\s+)?([\divxlc]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|[a-z]+-?[a-z]*)$/i.test(t) && t.length < 24 && /^(chapter|part|book|section|[\divxlc]+$)/i.test(t)) h.justNumber = true;
+        blocks.push(h);
+      }
       if (ids) pendingIds.splice(0).forEach((id) => ids.set(id, blocks.length - 1));
       return;
     }
@@ -108,13 +174,16 @@ export function htmlToBlocks(root, { resolveImg = (s) => s, ids = null, keepAsid
     const isBlock = BLOCK_TAGS.has(tag);
     if (isBlock) flush();
     if (tag === "LI") bufKind = "li";
-    if (tag === "BLOCKQUOTE") bufKind = "quote";
+    if (tag === "BLOCKQUOTE") { quoteDepth++; bufKind = "quote"; }
     for (const c of node.childNodes) walk(c);
     if (isBlock) flush();
+    if (tag === "BLOCKQUOTE") { quoteDepth--; bufKind = quoteDepth ? "quote" : "p"; }
   };
   walk(root);
   flush();
-  return blocks.filter((b) => b.type !== "hr" || blocks.length);
+  blocks.forEach((b) => delete b.justNumber);
+  // no two breaks in a row, none at the very start
+  return blocks.filter((b, i) => b.type !== "hr" || (i > 0 && blocks[i - 1].type !== "hr"));
 }
 
 // ───────── EPUB ─────────
@@ -134,8 +203,20 @@ const parseXml = (text, type = "application/xml") => new DOMParser().parseFromSt
 const MIME = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", svg: "image/svg+xml", webp: "image/webp" };
 
 /** Quick metadata for importing: title, author, cover image blob, word count estimate. */
+// Font "obfuscation" is not copy protection; anything else in encryption.xml is.
+const FONT_MANGLING = /idpf\.org\/2008\/embedding|ns\.adobe\.com\/pdf\/enc#RC/;
+async function checkDrm(zip) {
+  const names = zip.names();
+  if (names.includes("META-INF/rights.xml")) throw new Error("This EPUB is copy-protected (DRM), so it only opens in the app or store it was bought from.");
+  if (!names.includes("META-INF/encryption.xml")) return;
+  const xml = (await zip.text("META-INF/encryption.xml")) || "";
+  const algos = [...xml.matchAll(/Algorithm="([^"]+)"/g)].map((m) => m[1]);
+  if (algos.some((a) => !FONT_MANGLING.test(a))) throw new Error("This EPUB is copy-protected (DRM), so it only opens in the app or store it was bought from.");
+}
+
 export async function epubInfo(blob) {
   const zip = await readZip(blob);
+  await checkDrm(zip);
   const { opf, opfPath } = await readOpf(zip);
   const meta = (tag) => clean(opf.getElementsByTagNameNS("*", tag)[0]?.textContent || "");
   let cover = null;
@@ -169,6 +250,7 @@ export async function parseEpub(blob) {
   }
   const spine = [...opf.getElementsByTagNameNS("*", "itemref")].map((r) => manifest.get(r.getAttribute("idref"))).filter(Boolean);
   const blocks = [];
+  const docs = new Map(); // spine path → parsed document (to find footnote text)
   const anchors = new Map(); // "path#id" | "path" → block index
   const imgCache = new Map();
   const imageUrl = async (path) => {
@@ -196,10 +278,30 @@ export async function parseEpub(blob) {
     const ids = new Map();
     const start = blocks.length;
     anchors.set(item.href, start);
+    docs.set(item.href, doc);
     const part = htmlToBlocks(body, { resolveImg: (src) => urls.get(src) || null, ids });
+    for (const b of part) for (const r of b.refs || []) r.base = item.href;
     ids.forEach((idx, id) => anchors.set(`${item.href}#${id}`, start + idx));
     blocks.push(...part);
   }
+  // Footnote references → the note's own text, shown in a pop-up
+  const noteText = (base, href) => {
+    const [file, id] = href.split("#");
+    if (!id) return "";
+    const doc = docs.get(file ? resolvePath(base, file) : base);
+    const elm = doc?.getElementById?.(id) || doc?.querySelector?.(`[id="${CSS.escape(id)}"], [name="${CSS.escape(id)}"]`);
+    if (!elm) return "";
+    // the note is usually the element itself, or the paragraph/list item around a back-link
+    const host = /^(A|SPAN|SUP)$/i.test(elm.tagName) ? elm.closest("p, li, aside, div") || elm : elm;
+    return clean(host.textContent.replace(/^\s*[\[(]?(\d{1,3}|[*†‡§])[\])]?[.:]?\s*/, "")).slice(0, 1200);
+  };
+  for (const b of blocks) {
+    if (!b.refs) continue;
+    const notes = b.refs.map((r) => ({ at: r.at, n: r.label, text: noteText(r.base, r.href) })).filter((n) => n.text);
+    if (notes.length) b.notes = notes;
+    delete b.refs;
+  }
+
   // Table of contents: EPUB 3 nav, else EPUB 2 NCX
   const toc = [];
   const navItem = [...manifest.values()].find((m) => m.props.includes("nav"));

@@ -39,7 +39,9 @@ export async function pickAndImport() {
 export async function runImport(files, { openAfter = false } = {}) {
   if (!files?.length) return [];
   const pdfs = [...files].filter((f) => kindOf(f));
-  if (!pdfs.length) { toast("Luma reads PDF, EPUB, text, Markdown and saved web pages (.html)."); return []; }
+  const kindle = [...files].filter((f) => /\.(mobi|azw3?|kfx|prc)$/i.test(f.name || ""));
+  if (kindle.length) toast("Kindle books (.mobi, .azw3) can't be opened here. The free app Calibre converts them to EPUB in a click — then add the EPUB.", { duration: 9000, tone: "warn" });
+  if (!pdfs.length) { if (!kindle.length) toast("Luma reads PDF, EPUB, text, Markdown and saved web pages (.html)."); return []; }
   const close = toast(pdfs.length > 1 ? `Adding ${pdfs.length} books…` : `Adding “${pdfs[0].name}”…`, { duration: 60000 });
   const results = await importFiles(pdfs);
   close();
@@ -51,8 +53,8 @@ export async function runImport(files, { openAfter = false } = {}) {
   if (added) parts.push(added === 1 ? `added “${results.find((r) => r.status === "added")?.title || "1 book"}”` : `${added} books added`);
   if (linked) parts.push(`${linked} matched to synced books`);
   if (dupes.length) parts.push(`${dupes.length} already in your library`);
-  if (errors.length) parts.push(`${errors.length} couldn't be opened`);
-  if (parts.length) toast(parts.join(" · ").replace(/^./, (c) => c.toUpperCase()), { tone: errors.length ? "warn" : "" });
+  if (errors.length) parts.push(errors.length === 1 && /DRM|password/i.test(errors[0].error || "") ? errors[0].error : `${errors.length} couldn't be opened`);
+  if (parts.length) toast(parts.join(" · ").replace(/^./, (c) => c.toUpperCase()), { tone: errors.length ? "warn" : "", duration: errors.length ? 8000 : 3200 });
   if (added || linked) cue("save");
   fileIds = await store.fileIds();
   render();
@@ -188,8 +190,16 @@ function continueCard(doc) {
       el("h2.continue-title", {}, doc.title),
       el("p.muted", {}, `Page ${doc.lastPage || 1} of ${doc.pages || "?"} · ${p}% read`),
       el("div.bar", {}, el("span", { style: { width: p + "%" } })),
-      el("button.btn.primary", { onclick: () => navigate(`#/read/${doc.id}`) }, icon("book", 18), el("span", {}, "Continue reading"))
+      el("div.row", {},
+        el("button.btn.primary", { onclick: () => navigate(`#/read/${doc.id}`) }, icon("book", 18), el("span", {}, "Continue reading")),
+        fileIds.has(doc.id) ? el("button.btn", { onclick: () => listenTo(doc.id), title: "Carry on as an audiobook from where you stopped" }, icon("headphones", 18), el("span", {}, "Listen")) : null)
     ));
+}
+
+/** Open a book and start reading it aloud from where you left off. */
+function listenTo(docId) {
+  try { sessionStorage.setItem("luma.autolisten", docId); } catch {}
+  navigate(`#/read/${docId}`);
 }
 
 function bookCard(doc) {
@@ -220,6 +230,7 @@ function docMenu(anchor, doc, local) {
   const status = statusOf(doc);
   menu(anchor, [
     { label: "Open", icon: "book", onClick: () => navigate(`#/read/${doc.id}`) },
+    local ? { label: "Listen from where you stopped", icon: "headphones", onClick: () => listenTo(doc.id) } : null,
     { label: "Rename", icon: "edit", onClick: () => renameDoc(doc) },
     { label: doc.pinned ? "Unpin" : "Pin to top", icon: "pin", onClick: () => store.patch("docs", doc.id, { pinned: !doc.pinned }) },
     { label: status === "completed" ? "Mark as not finished" : "Mark as finished", icon: "check", onClick: async () => {

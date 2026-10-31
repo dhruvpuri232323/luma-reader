@@ -82,3 +82,47 @@ page([
 ], ["3 A handful still burn in Westminster today."])
 c.save()
 print("ok")
+
+# ── A book built like a real published EPUB: SVG cover, front matter, chapter
+#    number + title on two lines, small caps, scene breaks, endnotes, footnotes ──
+import base64
+png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+X = lambda body, title="": f'<?xml version="1.0" encoding="utf-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>{title}</title></head><body>{body}</body></html>'
+cover = X('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 900"><image width="600" height="900" xlink:href="cover.png"/></svg>', "Cover")
+titlep = X('<h1 class="title">The Glass Partnership</h1><p class="author">Ines Varga</p>', "Title")
+copy = X('<p>Copyright © 2021 by Ines Varga. All rights reserved.</p><p>ISBN 978-0-00-000000-0</p>', "Copyright")
+c1 = X('''<h1 class="ch-num" id="c1">1</h1><h1 class="ch-title">A Purposeful Life</h1>
+<p class="first"><span class="sc">THE OFFICE WAS</span> quiet when Lena arrived. She had rehearsed the pitch on the train, twice, and each time the numbers came out the same.<sup><a epub:type="noteref" id="r1" href="notes.xhtml#n1">1</a></sup></p>
+<p>Marcus looked up from his desk. “You’re early,” he said.</p>
+<p>“I’m always early,” Lena replied. “It’s the only advantage I can count on.”</p>
+<p>He laughed, and for a moment the tension left the room. Whatever it was, he was in her thrall.</p>
+<p class="space-break">—</p>
+<p><span class="sc">AFTER ALL THE DELAYS</span>, the partnership seemed to finally be getting off the ground in the early months of the year: as a beta run before a full launch, the companies had agreed on a single city.<a href="#fn2" epub:type="noteref">*</a></p>
+<aside epub:type="footnote" id="fn2"><p>* The city was never named in public.</p></aside>
+<p>* * *</p>
+<p>The trial began on a Monday. By Friday, nobody could remember why it had seemed so difficult.</p>
+<hr class="transition"/>
+<blockquote><p>“Move fast,” the memo said, “but never faster than the truth.”</p></blockquote>
+<p>Lena kept the memo pinned above her desk for years.</p>''', "Chapter 1")
+c2 = X('''<h2>Chapter 2</h2><h2>The Demo</h2>
+<p>The demonstration was set for nine o’clock. By eight, the room was full.<sup><a href="notes.xhtml#n2">2</a></sup></p>
+<p>“Are we ready?” Marcus asked.</p>
+<p>“We are,” she said.</p>''', "Chapter 2")
+notes = X('''<h1>Notes</h1><ol>
+<li id="n1"><p><a href="ch1.xhtml#r1">1.</a> Interview with the author, March 2016.</p></li>
+<li id="n2"><p><a href="ch2.xhtml">2.</a> Company records, quoted with permission.</p></li></ol>''', "Notes")
+nav2 = X('<nav epub:type="toc"><ol><li><a href="ch1.xhtml">1. A Purposeful Life</a></li><li><a href="ch2.xhtml">2. The Demo</a></li><li><a href="notes.xhtml">Notes</a></li></ol></nav>', "Contents")
+opf2 = '''<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">luma-test-real</dc:identifier><dc:title>The Glass Partnership</dc:title><dc:creator>Ines Varga</dc:creator><dc:language>en</dc:language><meta name="cover" content="img"/></metadata>
+<manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="img" href="cover.png" media-type="image/png" properties="cover-image"/>
+<item id="cv" href="cover.xhtml" media-type="application/xhtml+xml" properties="svg"/><item id="tp" href="title.xhtml" media-type="application/xhtml+xml"/><item id="cp" href="copy.xhtml" media-type="application/xhtml+xml"/>
+<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/><item id="nt" href="notes.xhtml" media-type="application/xhtml+xml"/></manifest>
+<spine><itemref idref="cv"/><itemref idref="tp"/><itemref idref="cp"/><itemref idref="c1"/><itemref idref="c2"/><itemref idref="nt"/></spine></package>'''
+with zipfile.ZipFile(os.path.join(here, "realbook.epub"), "w") as z:
+    z.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+    z.writestr("META-INF/container.xml", container, compress_type=zipfile.ZIP_DEFLATED)
+    for name, data in [("content.opf", opf2), ("nav.xhtml", nav2), ("cover.xhtml", cover), ("title.xhtml", titlep), ("copy.xhtml", copy), ("ch1.xhtml", c1), ("ch2.xhtml", c2), ("notes.xhtml", notes)]:
+        z.writestr("OEBPS/" + name, data, compress_type=zipfile.ZIP_DEFLATED)
+    z.writestr("OEBPS/cover.png", png)
+print("realbook ok")

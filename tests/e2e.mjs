@@ -288,6 +288,12 @@ async function selectText(page, from, to, pageNo = 1) {
   }, { from, to, pageNo });
 }
 
+/** Laptop settings show one page at a time: pick it from the sidebar. */
+async function settingsPage(pg, name) {
+  await pg.waitForSelector("#view-settings .set-section");
+  if (await pg.locator(".set-nav").count()) await pg.locator(".set-nav-item", { hasText: name }).click();
+}
+
 const page = await newDevice("laptop", { viewport: { width: 1440, height: 900 } });
 const laptop = page;
 
@@ -493,6 +499,7 @@ ok(await laptop.locator(".player").count() === 0, "stop");
 
 // natural voice (stand-in model) through the real worker and audio pipeline
 await laptop.goto(BASE + "#/settings");
+await settingsPage(laptop, "Listening");
 await laptop.waitForSelector(".voice-list");
 await laptop.locator(".set-row", { hasText: "Natural voices" }).locator(".btn").click();
 await laptop.waitForFunction(() => /Ready on this device/.test(document.querySelector("#view-settings").textContent), null, { timeout: 15000 }).then(
@@ -541,6 +548,7 @@ await laptop.goto(BASE + "#/notes");
 await laptop.waitForSelector(".note-item");
 ok(await laptop.locator(".note-item").count() === 3, "Notes view lists highlights from both views");
 await laptop.goto(BASE + "#/settings");
+await settingsPage(laptop, "Reading");
 await laptop.waitForSelector(".typo-preview");
 const prevFont = await laptop.evaluate(() => getComputedStyle(document.querySelector(".typo-preview")).fontFamily);
 ok(/EB Garamond/.test(prevFont), "Settings preview shows the chosen typeface");
@@ -548,6 +556,7 @@ await laptop.locator("#view-settings .typo .seg button", { hasText: /^Dark$/ }).
 ok(await within(laptop.waitForFunction(() => document.documentElement.dataset.theme === "dark")), "dark theme applies");
 await shot(laptop, "10-settings-dark");
 await laptop.locator("#view-settings .typo .seg button", { hasText: /^Light$/ }).click();
+await settingsPage(laptop, "Account");
 await laptop.locator(".btn", { hasText: "Sign in with Google" }).click();
 await laptop.waitForSelector(".sync-chip[data-status='synced']", { timeout: 8000 });
 ok(cloud.rows.some((r) => r.coll === "words" && r.rec.id === "lamplighter"), "signing in syncs everything up");
@@ -620,6 +629,32 @@ await laptop.waitForFunction(() => window.__luma.reader.tabs.get(window.__luma.r
 await laptop.locator(".side-panel .panel-head .icon-btn").click();
 await shot(laptop, "15-epub");
 
+// a book built like a real published EPUB
+await laptop.goto(BASE + "#/library");
+await laptop.setInputFiles("#file-input", [FIX("realbook.epub")]);
+await laptop.waitForFunction(() => document.querySelectorAll(".book").length === 6, null, { timeout: 10000 });
+ids = await docIds(laptop);
+await laptop.goto(BASE + `#/read/${ids["The Glass Partnership"]}`);
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 });
+await laptop.waitForTimeout(400);
+const real = await laptop.evaluate(() => {
+  const f = document.querySelector(".tab-pane.active .bk-flow");
+  return { h: [...f.querySelectorAll("h2")].map((x) => x.textContent), breaks: f.querySelectorAll(".bk-break").length, fn: [...f.querySelectorAll(".fn")].map((x) => x.dataset.text), quote: f.querySelectorAll(".bk-quote").length, text: f.textContent };
+});
+ok(real.h.includes("1: A Purposeful Life") && real.h.includes("Chapter 2: The Demo"), "chapter number and title on separate lines become one heading");
+ok(real.breaks >= 3, "scene breaks (—, * * *, rules) become quiet breaks");
+ok(real.fn.some((t) => /Interview with the author/.test(t)) && real.fn.some((t) => /never named/.test(t)), "EPUB endnotes and footnotes pop up from their markers");
+ok(!/same\.1|city\.\*/.test(real.text), "note numbers don't clutter the text");
+ok(real.quote >= 1, "block quotes keep their style");
+await laptop.keyboard.press("l");
+await laptop.waitForSelector(".player");
+await laptop.waitForFunction(() => /trial began|memo|Lena kept/.test(window.__luma.player.sentences[window.__luma.player.cur?.i]?.text || ""), null, { timeout: 30000 }).then(
+  () => ok(true, "reading aloud carries on past scene breaks (it used to stop at “—”)"), () => ok(false, "reading aloud carries on past scene breaks (it used to stop at “—”)"));
+ok(await laptop.evaluate(async () => (await import("/js/reader/player.js")).speechText("AFTER ALL THE DELAYS, the partnership")) === "After all the delays, the partnership", "capitals used for emphasis are read as words, not spelled out");
+await laptop.locator('.player [aria-label="Stop reading aloud"]').click();
+await laptop.goto(BASE + `#/read/${ids["The River Cottage"]}`);
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 });
+
 // character voices with the natural voice
 await laptop.evaluate(async () => { const v = await import("/js/core/voice.js"); v.prefs.engine = "natural"; await v.loadNatural(); });
 await active(laptop, "(t) => t.book.goToPage(1, { animate: false })");
@@ -636,6 +671,13 @@ ok(said(/why didn/)?.voice === said(/Thank you/)?.voice, "an unattributed reply 
 ok(said(/^\s*said Mary/)?.voice === narrator || trail.some((x) => /rain had not stopped/.test(x.text) && x.voice === narrator), "the narrator keeps your chosen voice");
 ok(await within(laptop.waitForFunction(() => CSS.highlights.has("luma-word"), null, { timeout: 6000 })), "the word being spoken is highlighted");
 await shot(laptop, "16-character-voices");
+const notesBefore = await laptop.evaluate(async () => (await import("/js/data/store.js")).store.list("annotations").length);
+await laptop.locator(".player .pl-save").click();
+await laptop.waitForFunction((n) => import("/js/data/store.js").then((m) => m.store.list("annotations").length > n), notesBefore, { timeout: 4000 }).then(
+  () => ok(true, "one tap in the player saves the sentence being read to your notes"), () => ok(false, "one tap in the player saves the sentence being read to your notes"));
+await laptop.keyboard.press(" ");
+ok(await laptop.evaluate(() => window.__luma.player.state) === "paused", "Space pauses while listening");
+await laptop.keyboard.press(" ");
 await laptop.locator(".player .pl-more").click();
 await laptop.locator(".menu-item", { hasText: "Who's who" }).click();
 await laptop.waitForSelector(".cast-row");
@@ -856,17 +898,20 @@ ok(laptop.errors.length === 0, "no errors on laptop (v3)" + (laptop.errors.lengt
 
 // Google Drive: books and everything else, with no Firebase
 await laptop.goto(BASE + "#/settings");
+await settingsPage(laptop, "Google Drive");
+ok(await laptop.locator(".set-nav-item").count() >= 8 && await laptop.evaluate(() => document.querySelector(".set-pane").getBoundingClientRect().width > innerWidth * 0.6), "laptop settings: a sidebar of pages, the page fills the window");
 await laptop.locator(".btn", { hasText: "Connect Google Drive" }).click();
 await laptop.waitForFunction(() => window.__luma.drive.status === "synced", null, { timeout: 30000 }).catch(() => {});
 const files = [...driveFiles.values()];
-ok(files.some((f) => f.appProperties?.luma === "sync") && files.filter((f) => f.appProperties?.lumaId).length >= 7, `books and library are saved to Google Drive (${files.filter((f) => f.appProperties?.lumaId).length} book files)`);
+ok(files.some((f) => f.appProperties?.luma === "sync") && files.filter((f) => f.appProperties?.lumaId).length >= 8, `books and library are saved to Google Drive (${files.filter((f) => f.appProperties?.lumaId).length} book files)`);
 await shot(laptop, "28-drive-settings");
 const tablet = await newDevice("tablet", { viewport: { width: 1180, height: 820 } });
 await tablet.goto(BASE + "#/settings");
+await settingsPage(tablet, "Google Drive");
 await tablet.locator(".btn", { hasText: "Connect Google Drive" }).click();
 await tablet.waitForFunction(() => window.__luma.drive.status === "synced", null, { timeout: 30000 }).catch(() => {});
 await tablet.goto(BASE + "#/library");
-await tablet.waitForFunction(() => document.querySelectorAll(".book").length >= 7, null, { timeout: 10000 }).then(
+await tablet.waitForFunction(() => document.querySelectorAll(".book").length >= 8, null, { timeout: 10000 }).then(
   () => ok(true, "a new device gets the whole library from Drive — no Firebase"), () => ok(false, "a new device gets the whole library from Drive — no Firebase"));
 const tIds = await docIds(tablet);
 await tablet.goto(BASE + `#/read/${tIds["The River Cottage"]}`);
@@ -883,6 +928,11 @@ await phone.setInputFiles("#file-input", [FIX("story.epub")]);
 await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 }).catch(() => {});
 if (!(await phone.locator(".tab-pane.active .bookview:not([hidden]) .bk-b").count())) { await phone.goto(BASE + `#/read/${ids["The River Cottage"]}`); await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 }); }
 await shot(phone, "30-phone-epub");
+await phone.goto(BASE + "#/library");
+await phone.locator(".book", { hasText: "The River Cottage" }).locator(".card-more").click();
+await phone.locator(".menu-item", { hasText: "Listen from where you stopped" }).click();
+await phone.waitForSelector(".player", { timeout: 10000 }).then(() => ok(true, "“Listen” on the library card opens the book and starts reading aloud"), () => ok(false, "“Listen” on the library card opens the book and starts reading aloud"));
+await phone.locator('.player [aria-label="Stop reading aloud"]').click().catch(() => {});
 ok(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "no sideways overflow on the phone");
 ok(phone.errors.length === 0, "no errors on phone (v3)" + (phone.errors.length ? ": " + phone.errors.join(" | ") : ""));
 

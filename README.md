@@ -11,7 +11,7 @@ A calm reader for PDFs, EPUB books and web articles, on laptop and phone. It set
 ## What it does
 
 **Bring anything to read**
-- **PDF**, **EPUB**, plain text, Markdown and saved web pages (.html) — drop them on the window, pick them, “Open with” on desktop, or share them to the app on Android.
+- **PDF**, **EPUB**, plain text, Markdown and saved web pages (.html) — drop them on the window, pick them, “Open with” on desktop, or share them to the app on Android. EPUB endnotes and footnotes become tap-to-read pop-ups, split chapter titles (“1” + “A Purposeful Life”) are joined, and scene breaks (“* * *”, “—”, ornaments) are shown as a quiet ⁂. Locked (DRM) and Kindle files get a plain explanation instead of a blank page.
 - **Web articles from a link**: Luma keeps just the text and pictures — no ads, no pop-ups — and sets it as a book. A **“Save to Luma” button** for your bookmarks bar sends any page you're on (even ones you're signed in to); on a phone, share a link to the app.
 - **Paste text** to read, hear or study it.
 
@@ -24,11 +24,12 @@ A calm reader for PDFs, EPUB books and web articles, on laptop and phone. It set
 - Minutes left in the chapter, learned from how fast *you* read.
 
 **Listen like an audiobook**
-- Press the headphones (or L): read aloud sentence by sentence with natural pauses; **the sentence and the very word being spoken light up, and the page turns or scrolls by itself to follow the voice**. Scroll away and it waits, with a **Back to the voice** button.
+- Press the headphones (or L), or **Listen** on a book in the library: read aloud sentence by sentence with natural pauses; **the sentence and the very word being spoken light up, and the page turns or scrolls by itself to follow the voice**. Scroll away and it waits, with a **Back to the voice** button.
 - **Character voices**: Luma works out who is speaking each line of dialogue (“said Mary”, “she asked”, who is acting in the paragraph, the back-and-forth of a conversation) and gives each character their own voice — women and men in fitting voices — while the narrator keeps yours. Change any of them under *Who's who*.
 - **No pauses between sentences**: the natural voice is made well ahead on several processor cores at once and each sentence is lined up on the audio clock to start the moment the last one ends — only the pause a narrator would leave. It loads quietly while you read, so Listen starts at once.
-- **Natural voices** run on your device (Kokoro, ~90 MB once, then offline). **Fast mode** runs them on your graphics chip (WebGPU) — several times quicker on most laptops. Until the voice is ready, the best voice your device has.
-- Skips citations like (Smith, 2004) and [12], figure captions and footnote markers; **your own pronunciations** for names it gets wrong.
+- **Natural voices** run on your device (Kokoro, ~90 MB once, then offline). **Fast mode** runs them on your graphics chip (WebGPU) — several times quicker on most laptops (on Snapdragon / Adreno laptops, Settings → Listening shows the one browser switch that turns it on). Until the voice is ready, the best voice your device has.
+- Reads straight through scene breaks, dashes and image-only pages without stopping; skips citations like (Smith, 2004) and [12], figure captions, footnote markers and copyright-page small print (ISBNs); reads SMALL CAPS openings as ordinary words; **your own pronunciations** for names it gets wrong.
+- **Save the sentence you're hearing** to your notes with one tap, then add a thought. Space pauses, Shift + ← / → move a sentence back or forward.
 - **Save as an audiobook**: this chapter, or the whole book as one file per chapter (straight into a folder on Chrome/Edge) — made in parallel while you keep reading.
 - Speed, sleep timer, headset and lock-screen controls; keeps playing with the screen off on phones.
 
@@ -119,7 +120,7 @@ node scripts/serve.mjs &      # keep running
 npm test
 ```
 
-The test (109 checks) drives a laptop, a phone (Pixel 7) and a tablet in Chromium with stand-ins for Firebase, Google Drive, the dictionaries, the article reader and the voice model: Page and Book view, typography, page turns and page curl, scroll layout, ruler, auto-scroll, footnotes, EPUB and web articles, dictionary fallbacks, “Words here”, highlights across both views, listening with character voices and word-by-word follow-along, chapter audio export, search inside books, tags and the commonplace book, exports (Markdown/Obsidian/Anki/quote cards), practice modes, sync through Firebase and through Drive, and reopening offline. Screenshots land in `tests/output/`. `tests/fixtures/make_v3_fixtures.py` rebuilds the sample EPUB and footnoted PDF.
+The test (120 checks) drives a laptop, a phone (Pixel 7) and a tablet in Chromium with stand-ins for Firebase, Google Drive, the dictionaries, the article reader and the voice model: Page and Book view, typography, page turns and page curl, scroll layout, ruler, auto-scroll, footnotes, EPUB and web articles, dictionary fallbacks, “Words here”, highlights across both views, listening with character voices and word-by-word follow-along, chapter audio export, search inside books, tags and the commonplace book, exports (Markdown/Obsidian/Anki/quote cards), practice modes, sync through Firebase and through Drive, and reopening offline. Screenshots land in `tests/output/`. `tests/fixtures/make_v3_fixtures.py` rebuilds the sample EPUB and footnoted PDF.
 
 ## Credits
 

@@ -25,7 +25,10 @@ export function mountSettings(container) {
   bus.on("change", ({ coll, source }) => coll === "settings" && source === "remote" && rerender());
   voice.voicesReady().then(rerender);
 }
-export function settingsShown() { render(); }
+export function settingsShown(query = {}) {
+  if (query.page) { current = query.page; localStorage.setItem("luma.settingsPage", current); }
+  render();
+}
 
 function section(title, desc, ...rows) {
   return el("section.set-section", {}, el("h2", {}, title), desc ? el("p.muted.set-desc", {}, desc) : null, el("div.set-rows", {}, rows));
@@ -45,26 +48,26 @@ function seg(key, options) {
   }, l)));
 }
 
-function render() {
+const wideQuery = matchMedia("(min-width: 900px)");
+let current = localStorage.getItem("luma.settingsPage") || "sync";
+
+/** Every settings page: [id, title, icon, build()] */
+function pages() {
   const s = store.settings();
-  setKids(root, 
-    el("header.view-head", {}, el("div.view-title", {}, el("h1", {}, "Settings"), el("p.muted", {}, sync.available || drive.enabled ? "Changes apply instantly and sync to your other devices" : "Changes apply instantly"))),
-    accountSection(),
-    driveSection(),
-    section("Reading", "How books look in Book view. Changes show in the preview straight away.",
+  return [
+    ["sync", "Account & sync", "cloud", accountSection],
+    drive.configured ? ["drive", "Google Drive", "drive", driveSection] : null,
+    ["reading", "Reading", "openBook", () => section("Reading", "How books look in Book view. Changes show in the preview straight away.",
       el("div.set-typo", {}, typographyControls({ preview: true })),
       row("Open new PDFs in", "You can switch any PDF between Page and Book view from the reader's top bar. EPUBs and articles always open as a book.", seg("defaultMode", [["pdf", "Page view"], ["book", "Book view"]])),
       toggle("recap", "“Where was I?” reminder", "When you come back to a book after a while, show the chapter, your last lines and latest note"),
-      row("Save articles from your browser", "A “Save to Luma” button for your bookmarks bar", el("button.btn.sm", { onclick: () => bookmarkletDialog() }, icon("globe", 16), el("span", {}, "Get the button")))),
-    voiceSection(),
-    section("Learning words", null,
+      row("Save articles from your browser", "A “Save to Luma” button for your bookmarks bar", el("button.btn.sm", { onclick: () => bookmarkletDialog() }, icon("globe", 16), el("span", {}, "Get the button"))))],
+    ["listening", "Listening", "headphones", voiceSection],
+    ["words", "Learning words", "words", () => section("Learning words", "Help with the words you don't know yet.",
       toggle("markHard", "Underline unusual words while reading", "Book view marks words you may not know (set the level in the reader's Words panel)"),
       row("Daily review", s.reviewReminder ? `Reminder at ${new Date(2000, 0, 1, s.reminderHour ?? 19).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · goal ${s.dailyGoal || 10} words` : `Goal ${s.dailyGoal || 10} words a day · reminders off`,
-        el("button.btn.sm", { onclick: () => reminderDialog() }, icon("bell", 16), el("span", {}, "Set up")))),
-    section("Comfort", null,
-      toggle("reduceMotion", "Reduce motion", "Turns off transitions and card animations"),
-      toggle("sounds", "Sound cues", "Soft tones when you save a word, bookmark or finish a book")),
-    section("Dictionary", "Look words up without selecting or copying them.",
+        el("button.btn.sm", { onclick: () => reminderDialog() }, icon("bell", 16), el("span", {}, "Set up"))))],
+    ["dictionary", "Dictionary", "search", () => section("Dictionary", "Look words up without selecting or copying them.",
       toggle("hoverLookup", "Define on hover", "Laptops and desktops: rest the pointer on a word"),
       (() => {
         const out = el("span.pop-val", {}, `${s.hoverDelay} ms`);
@@ -75,14 +78,47 @@ function render() {
       toggle("tapLookup", "Define on tap", "Phones and tablets: tap a word once"),
       row("Offline definitions", "Every word you look up is kept on this device", el("button.btn.sm", { onclick: async () => {
         await idb.clear("defs"); toast("Definition cache cleared");
-      } }, "Clear cache"))),
-    installSection(),
-    dataSection(),
-    section("Keyboard shortcuts", null,
-      el("dl.keys", {}, [["← →", "Previous / next page"], ["Space", "Next page in Book view · flip a flashcard"], ["V", "Switch Page / Book view"], ["L", "Listen / stop"], ["A", "Auto-scroll at your reading speed"], ["R", "Reading ruler (Book view)"], ["Ctrl F", "Search in book"], ["B", "Bookmark page"], ["F", "Focus mode"], ["+ −", "Zoom (Page view)"], ["Shift R", "Rotate pages"], ["Esc", "Close pop-ups"]]
-        .map(([k, d]) => [el("dt", {}, el("kbd", {}, k)), el("dd", {}, d)]))),
-    el("p.muted.small.about", {}, "Luma Reader · free, no ads, no account needed · PDFs read on your device with PDF.js · natural voices by Kokoro, on your device · definitions from the Free Dictionary API, Wiktionary, WordNet (Datamuse) and Wikipedia · articles via Jina Reader"));
+      } }, "Clear cache")))],
+    ["comfort", "Comfort", "moon", () => section("Comfort", "Calmer motion and sound.",
+      toggle("reduceMotion", "Reduce motion", "Turns off transitions and card animations"),
+      toggle("sounds", "Sound cues", "Soft tones when you save a word, bookmark or finish a book"))],
+    ["install", "Install app", "download", installSection],
+    ["data", "Your data", "file", dataSection],
+    ["keys", "Keyboard shortcuts", "type", () => section("Keyboard shortcuts", "Faster with a keyboard.",
+      el("dl.keys", {}, [["← →", "Previous / next page"], ["Space", "Next page in Book view · flip a flashcard"], ["V", "Switch Page / Book view"], ["L", "Listen / stop"], ["Space", "Pause / play while listening"], ["Shift ← →", "Previous / next sentence while listening"], ["A", "Auto-scroll at your reading speed"], ["R", "Reading ruler (Book view)"], ["Ctrl F", "Search in book"], ["B", "Bookmark page"], ["F", "Focus mode"], ["+ −", "Zoom (Page view)"], ["Shift R", "Rotate pages"], ["Esc", "Close pop-ups"]]
+        .map(([k, d]) => [el("dt", {}, el("kbd", {}, k)), el("dd", {}, d)])),
+      el("p.muted.small.about", {}, "Luma Reader · free, no ads, no account needed · PDFs read on your device with PDF.js · natural voices by Kokoro, on your device · definitions from the Free Dictionary API, Wiktionary, WordNet (Datamuse) and Wikipedia · articles via Jina Reader"))],
+  ].filter(Boolean);
 }
+
+function render() {
+  const list = pages();
+  const subtitle = sync.available || drive.enabled ? "Changes apply instantly and sync to your other devices" : "Changes apply instantly";
+  if (!wideQuery.matches) {
+    // phone: one long page
+    root.classList.remove("wide");
+    setKids(root,
+      el("header.view-head", {}, el("div.view-title", {}, el("h1", {}, "Settings"), el("p.muted", {}, subtitle))),
+      ...list.map(([, , , build]) => build()));
+    return;
+  }
+  // laptop: a sidebar of pages, the chosen page fills the window
+  if (!list.some(([id]) => id === current)) current = list[0][0];
+  const scrollTop = root.querySelector(".set-pane")?.scrollTop || 0;
+  root.classList.add("wide");
+  const pane = el("main.set-pane", { "aria-live": "polite" }, list.find(([id]) => id === current)[3]());
+  setKids(root,
+    el("nav.set-nav", { "aria-label": "Settings sections" },
+      el("div.set-nav-head", {}, el("h1", {}, "Settings"), el("p.muted.small", {}, subtitle)),
+      el("div.set-nav-list", { role: "tablist" }, list.map(([id, title, ic]) =>
+        el("button.set-nav-item" + (id === current ? ".on" : ""), {
+          role: "tab", "aria-selected": String(id === current),
+          onclick: () => { current = id; localStorage.setItem("luma.settingsPage", id); render(); root.querySelector(".set-pane")?.scrollTo(0, 0); },
+        }, icon(ic, 18), el("span", {}, title))))),
+    pane);
+  pane.scrollTop = scrollTop;
+}
+wideQuery.addEventListener("change", () => root?.closest(".view")?.classList.contains("active") && render());
 
 function accountSection() {
   if (!firebaseConfigured() && !sync.available) {
@@ -209,8 +245,32 @@ function speedRow() {
   const hint = el("span.set-hint", {}, mode === "fast"
     ? `Uses your graphics chip — several times faster on most laptops (${voice.MODE_SIZE("fast")} once).`
     : `Works on every device (${voice.MODE_SIZE("standard")}).${ns.workers > 1 ? ` Using ${ns.workers} processor cores at once.` : ""} Fast mode uses the graphics chip instead and is several times quicker on most laptops.`);
-  voice.fastModeAvailable().then((ok) => { if (!ok && mode !== "fast") { control.lastChild.disabled = true; control.lastChild.title = "This device or browser can't use the graphics chip for the voice"; } });
-  return el("div.set-row", {}, el("div.set-text", {}, el("span.set-label", {}, "Natural voice speed"), hint), control);
+  const advice = el("div.speed-advice");
+  voice.deviceInfo().then((info) => {
+    if (info.emulated && !info.edge) {
+      advice.append(el("div.callout.small-callout", {}, icon("cloudOff", 18), el("div", {},
+        el("strong", {}, "You're using the Intel/AMD version of Chrome"),
+        el("p", {}, "On a Snapdragon laptop it runs through translation, which makes everything — the voice included — much slower. Download Chrome again from google.com/chrome (it picks the Arm version for this laptop), or use Microsoft Edge, which already runs natively."))));
+    }
+    if (info.fast || mode === "fast") return;
+    control.lastChild.disabled = true;
+    if (info.snapdragon) {
+      const flag = `${info.edge ? "edge" : "chrome"}://flags/#enable-unsafe-webgpu`;
+      advice.append(el("div.callout.small-callout", {}, icon("sparkle", 18), el("div", {},
+        el("strong", {}, "Turn on Fast on this Snapdragon laptop"),
+        el("p", {}, `${info.edge ? "Edge" : "Chrome"} keeps the graphics chip switched off for websites on Windows on Arm for now. It's one setting in the browser itself${matchMedia("(display-mode: standalone)").matches ? ` — the installed Luma app uses the same setting, so change it in a normal ${info.edge ? "Edge" : "Chrome"} window` : ""}:`),
+        el("ol.flag-steps", {},
+          el("li", {}, `Copy this address and paste it into the address bar of a ${info.edge ? "Microsoft Edge" : "Chrome"} window: `, el("code", {}, flag), " ",
+            el("button.btn.sm", { onclick: () => navigator.clipboard?.writeText(flag).then(() => toast("Copied — paste it into the address bar")) }, icon("copy", 14), "Copy")),
+          el("li", {}, "Set “Unsafe WebGPU Support” to ", el("strong", {}, "Enabled"), "."),
+          el("li", {}, "Click ", el("strong", {}, "Restart"), " at the bottom of that page. Then close and reopen Luma, come back here and choose ", el("strong", {}, "Fast"), ".")),
+        el("p.muted.small", {}, "It's a browser setting meant for testing, so if anything misbehaves, set it back to Default. Luma switches to the standard voice by itself if the graphics chip has trouble."))));
+    } else {
+      control.lastChild.title = "This device or browser can't use the graphics chip for the voice";
+      advice.append(el("p.muted.small", {}, "Fast isn't available in this browser on this device — the standard voice is used, spread over several processor cores."));
+    }
+  });
+  return el("div.set-block", {}, el("div.set-row", {}, el("div.set-text", {}, el("span.set-label", {}, "Natural voice speed"), hint), control), advice);
 }
 
 async function switchMode(mode) {

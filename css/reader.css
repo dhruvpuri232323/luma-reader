@@ -413,7 +413,13 @@ html.focus-mode .player { bottom: calc(14px + var(--safe-b)); }
 
 .listening .pdfViewer { padding-bottom: 140px; }
 html:has(.view.reader.active.listening) .toasts { bottom: calc(150px + var(--safe-b)); }
-@media (max-width: 760px) { html:has(.view.reader.active.listening) .toasts { bottom: calc(200px + var(--safe-b)); } }
+@media (max-width: 760px) {
+  html:has(.view.reader.active.listening) .toasts { bottom: calc(232px + var(--safe-b)); }
+  .player .pl-wide { display: none; }
+  .player { flex-wrap: wrap; }
+  .pl-side { flex: 0 1 auto; }
+  .pl-controls { flex: 1 1 auto; }
+}
 .typo.compact .typo-row:has(input[type="range"]) { display: grid; grid-template-columns: auto 1fr auto auto; row-gap: 4px; }
 .typo.compact .typo-row:has(input[type="range"]) .typo-label { grid-column: 1 / -1; }
 
@@ -525,3 +531,5 @@ html[data-warm="1"][data-theme="dark"]::after { background: rgb(255 120 20 / cal
 .task-card .pl-progress.static { margin: 10px 0 6px; }
 .task-card p { margin: 0; }
 @media (max-width: 760px) { .task-card { left: 16px; bottom: calc(76px + var(--safe-b, 0px)); } }
+.bk-break { text-align: center; margin: .9em 0; color: var(--muted); break-inside: avoid; }
+.bk-break::before { content: "⁂"; font-size: 1.1em; letter-spacing: .2em; }

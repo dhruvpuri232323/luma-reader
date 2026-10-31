@@ -9,11 +9,14 @@ import { icon } from "../ui/icons.js";
 import { toast, menu, dialog, confirmDialog } from "../ui/overlay.js";
 import { sentenceSpans, speakable, TextIndex, textLayerSpans, setHighlight } from "./textindex.js";
 import { DialogueContext, Cast, splitParts } from "./dialogue.js";
+import { createTextHighlight, createHighlight } from "./annotate.js";
 import * as voice from "../core/voice.js";
 
 const RATES = [0.8, 0.9, 1, 1.1, 1.2, 1.35, 1.5, 1.75, 2];
 const ENDS = /[.!?:"”’)]\s*$/;
 const CAPTION = /^(fig(ure)?|table|plate|chart|exhibit|image|photo|illustration|source|map|diagram)\.?\s*[\dIVXivx]+[a-z]?\s*[.:—–-]/i;
+// copyright-page small print: nobody wants an ISBN read to them
+const BOILERPLATE = /^\s*(e-?ISBN|ISBN[\s:-]*[\dX-]{10}|Copyright\s*(©|\(c\)|\d{4})|©\s*\d{4}|All rights reserved|Printed in (the )?[\w ]{2,40}\.?\s*$|Library of Congress Cataloging|British Library Cataloguing|First (published|edition) (in|by)? ?\d{4}|Cover (design|art|photograph) (by|©)|\d{1,2} \d{1,2} \d{1,2} \d{1,2} \d{1,2})/i;
 const CITATION = /\s?\((?:see\s|cf\.\s)?[A-Z][\p{L}'’-]+(?:\s(?:et al\.?|and|&)(?:\s[A-Z][\p{L}'’-]+)?)?,?\s(?:1[5-9]|20)\d\d[a-z]?(?:,\s?(?:p|pp)\.\s?\d+(?:[–-]\d+)?)?(?:;\s?[^()]{0,80})?\)/gu;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const smooth = () => (document.documentElement.dataset.motion === "reduce" ? "auto" : "smooth");
@@ -23,6 +26,9 @@ export function speechText(text) {
   const s = store.settings();
   let t = text;
   if (s.skipCitations !== false) t = t.replace(CITATION, "");
+  // capitals used for emphasis or small caps ("AFTER ALL THE DELAYS, the…"): say the words, don't spell them
+  t = t.replace(/\b[A-Z][A-Z'’]+(?:[\s,;:–—-]+[A-Z][A-Z'’]+)+\b/g, (run) => (/[A-Z]{4,}/.test(run) ? run.toLowerCase().replace(/^\p{L}/u, (c) => c.toUpperCase()) : run));
+  t = t.replace(/\b[A-Z]{5,}\b/g, (w) => w[0] + w.slice(1).toLowerCase());
   t = speakable(t);
   for (const [w, say] of Object.entries(s.pronunciations || {})) {
     if (w && say) t = t.replace(new RegExp(`(?<![\\p{L}])${esc(w)}(?![\\p{L}])`, "giu"), say);
@@ -35,13 +41,19 @@ export function appendSentences(list, blocks, p, dctx) {
   const s = store.settings();
   const cast = s.characterVoices !== false && dctx;
   for (const b of blocks) {
+    if (b.type === "hr" || (b.type !== "img" && b.text && !/[\p{L}\p{N}]/u.test(b.text))) {
+      // a scene break ("* * *", "—"): a longer pause, nothing to say
+      const prev = list[list.length - 1];
+      if (prev) { prev.paraEnd = true; prev.breakAfter = true; }
+      continue;
+    }
     if (b.type === "img" || !b.text) continue;
     if (b.type === "h") {
       list.push({ text: b.text, page: p, heading: true, level: b.level, paraEnd: true, segs: [{ bid: b.id, start: 0, end: b.text.length }], parts: [{ bid: b.id, start: 0, end: b.text.length, text: b.text, speaker: null }] });
       if (dctx) dctx.carry = null;
       continue;
     }
-    if (s.skipCaptions !== false && CAPTION.test(b.text)) continue;
+    if (s.skipCaptions !== false && (CAPTION.test(b.text) || (b.text.length < 320 && BOILERPLATE.test(b.text)))) continue;
     const quotes = cast ? dctx.analyze(b.text, { cont: b.cont }) : [];
     const spans = sentenceSpans(b.text);
     spans.forEach((sp, k) => {
@@ -58,6 +70,7 @@ export function appendSentences(list, blocks, p, dctx) {
         prev.paraEnd = spans.length === 1;
         return;
       }
+      if (!parts.length) { if (prev && k === spans.length - 1) prev.paraEnd = true; return; } // nothing to say ("…", "—")
       list.push({ text, page: p, segs: [seg], parts, paraEnd: k === spans.length - 1 });
     });
   }
@@ -290,7 +303,10 @@ class Player {
     if (!model) return;
     while (this.sentences.length < count && this.nextPage <= model.numPages) {
       const p = this.nextPage++;
-      appendSentences(this.sentences, await model.page(p), p, this.dctx);
+      // a page that won't load (a damaged chapter file) is passed over, never a dead stop
+      let blocks = [];
+      try { blocks = await model.page(p); } catch (e) { console.warn("Read aloud: skipped page", p, e); }
+      appendSentences(this.sentences, blocks || [], p, this.dctx);
     }
   }
 
@@ -323,7 +339,7 @@ class Player {
     let e = this.cache.get(key);
     if (!e) {
       const text = speechText(part.text);
-      e = { state: "pending", voice: v.id };
+      e = { state: "pending", voice: v.id, key, t0: performance.now() };
       if (!text.trim()) { e.state = "ok"; e.audio = { pcm: new Float32Array(480), rate: 24000 }; }
       else {
         e.promise = voice.synthNatural(text, v.id);
@@ -378,7 +394,7 @@ class Player {
   #gapBefore(i) {
     const prev = this.sentences[i - 1];
     if (!prev || i === this.next0) return 0;
-    const g = prev.heading ? 0.6 : prev.paraEnd ? 0.3 : 0.05;
+    const g = prev.breakAfter ? 1 : prev.heading ? 0.6 : prev.paraEnd ? 0.3 : 0.05;
     return g / (voice.prefs.rate || 1);
   }
 
@@ -400,7 +416,7 @@ class Player {
     for (let j = this.cur.i >= 0 ? this.cur.i : this.i; j < this.sentences.length && chars < 2200; j++) {
       const s = this.sentences[j];
       s.parts.forEach((_, k) => this.#audioFor(j, k));
-      chars += s.text.length;
+      chars += s.text.length + 1;
     }
     for (const [key] of this.cache) if (Number(key.split(".")[0]) < this.i - 3) this.cache.delete(key);
     // lay ready clips on the timeline
@@ -409,9 +425,28 @@ class Player {
       const { i, k } = this.next;
       const s = this.sentences[i];
       if (!s) break;
+      if (!s.parts.length) { this.next = { i: i + 1, k: 0 }; continue; } // never wait on a line with nothing to say
       if (this.sleepChapter && k === 0 && s.heading && i > this.startI) { this.stopAtI = i; break; }
       const e = this.#audioFor(i, k);
-      if (!e || e.state === "pending") break;
+      if (!e) { this.next = k + 1 < s.parts.length ? { i, k: k + 1 } : { i: i + 1, k: 0 }; continue; }
+      if (e.state === "pending") {
+        // a part that never comes back (rare): ask again, then move on rather than stall
+        if (now >= this.lastEnd && performance.now() - e.t0 > 20000) {
+          this.cache.delete(e.key);
+          voice.cancelNatural([e.promise]);
+          if ((this.retries = (this.retries || 0) + 1) > 1) { this.retries = 0; this.next = k + 1 < s.parts.length ? { i, k: k + 1 } : { i: i + 1, k: 0 }; continue; }
+        }
+        break;
+      }
+      if (e.state === "failed") {
+        const st = voice.naturalState().status;
+        if (st !== "ready") {
+          // the voice engine is restarting (or broke): never skip ahead because of it
+          this.cache.delete(e.key);
+          if (st !== "loading") { this.#begin(i); return; } // carry on with the device voice
+          break;
+        }
+      }
       if (e.state === "ok") {
         const gap = k === 0 ? this.#gapBefore(i) : 0.01;
         const when = this.lastEnd ? Math.max(now + 0.03, this.lastEnd + gap) : now + 0.06;
@@ -468,6 +503,8 @@ class Player {
           toast(`Downloading the fast voice (${voice.MODE_SIZE("fast")}, one time)…`);
         },
       });
+    } else if ((await voice.deviceInfo()).snapdragon && voice.naturalMode() !== "fast") {
+      toast("Your Snapdragon laptop can make the voice much faster with one browser setting.", { action: "Show me", onAction: () => { location.hash = "#/settings?page=listening"; }, duration: 12000 });
     } else {
       toast("This device makes the natural voice slowly, so it may pause now and then.", { action: "Use device voice", onAction: () => { voice.prefs.engine = "system"; if (this.active) this.#begin(this.i); }, duration: 10000 });
     }
@@ -520,6 +557,7 @@ class Player {
       }
       this.next = k + 1 < s.parts.length ? { i, k: k + 1 } : { i: i + 1, k: 0 };
       const part = s.parts[k];
+      if (!part) continue;
       const text = speechText(part.text);
       if (!text.trim()) continue;
       const sys = store.settings().characterVoices !== false && part.speaker ? this.cast.voiceFor(part.speaker, false) : {};
@@ -666,6 +704,7 @@ class Player {
         if (r) ranges.push(r);
       }
       setHighlight("luma-speak", ranges);
+      this.speakRanges = ranges;
       if (this.following) {
         tab.book.reveal(ranges[0]);
         tab.book.rulerTo(ranges[0]);
@@ -684,6 +723,7 @@ class Player {
     this.sentenceStart = found?.hit?.[0] ?? 0;
     const range = found?.hit ? found.idx.range(found.hit[0], found.hit[1]) : null;
     setHighlight("luma-speak", range ? [range] : []);
+    this.speakRanges = range ? [range] : [];
     if (range && this.following) this.#follow(range);
   }
 
@@ -729,6 +769,18 @@ class Player {
   }
 
   // ───────── UI ─────────
+  /** "Chapter 3: The Demo" for books with chapters, otherwise the page. */
+  #where(s) {
+    if (s.heading) return "Heading";
+    const toc = this.tab?.model?.toc;
+    if (toc?.length) {
+      let hit = null;
+      for (const t of toc) if (t.page <= s.page && (!hit || t.page >= hit.page) && (t.depth || 0) === 0) hit = t;
+      if (hit?.title) return hit.title.length > 34 ? hit.title.slice(0, 32).trim() + "…" : hit.title;
+    }
+    return "Page " + s.page;
+  }
+
   renderBar(note) {
     if (!this.active || !this.root) return;
     if (!this.bar) {
@@ -744,7 +796,7 @@ class Player {
       ? `${voice.NATURAL_VOICES.find((v) => v.id === voice.prefs.natural)?.name || "Natural"} · natural voice`
       : `${voice.currentSystemVoice()?.name || "Device voice"} · device voice`;
     const who = this.speaker?.name ? `${this.speaker.name.replace(/^\w/, (c) => c.toUpperCase())} speaking` : null;
-    let line1 = note || (s ? `${s.heading ? "Heading" : "Page " + s.page} · ${who || vName}` : vName);
+    let line1 = note || (s ? `${this.#where(s)} · ${who || vName}` : vName);
     let progress = null;
     if (voice.prefs.engine === "natural" && ns.status === "loading") {
       line1 = ns.downloaded ? "Starting the natural voice — device voice for a moment" : `Downloading natural voice · ${Math.round(ns.progress * 100)}% (one time) — device voice until then`;
@@ -763,9 +815,10 @@ class Player {
         el("p.pl-line1" + (this.buffering && this.state === "playing" ? ".busy" : ""), {}, line1),
         el("p.pl-line2", {}, s ? s.text : "")),
       el("div.pl-side", {},
+        el("button.icon-btn.pl-save", { "aria-label": "Save this sentence", title: "Save this sentence to your notes", onclick: () => this.saveSentence() }, icon("highlight", 19)),
         el("button.pl-chip", { "aria-label": "Reading speed", title: "Reading speed", onclick: (e) => menu(e.currentTarget, RATES.map((r) => ({ label: `${r}×${r === 1 ? " (normal)" : ""}`, checked: r === rate, onClick: () => this.setRate(r) }))) }, `${rate}×`),
-        el("button.icon-btn", { "aria-label": "Voice", title: "Voice", onclick: (e) => voiceMenu(e.currentTarget) }, icon("user", 19)),
-        el("button.icon-btn" + (this.sleepLabel ? ".on" : ""), { "aria-label": "Sleep timer", title: this.sleepLabel ? `Sleep timer: ${this.sleepLabel}` : "Sleep timer", onclick: (e) => menu(e.currentTarget, [
+        el("button.icon-btn.pl-wide", { "aria-label": "Voice", title: "Voice", onclick: (e) => voiceMenu(e.currentTarget) }, icon("user", 19)),
+        el("button.icon-btn.pl-wide" + (this.sleepLabel ? ".on" : ""), { "aria-label": "Sleep timer", title: this.sleepLabel ? `Sleep timer: ${this.sleepLabel}` : "Sleep timer", onclick: (e) => menu(e.currentTarget, [
           { heading: "Stop reading after" },
           ...[["Off", 0], ["10 minutes", 10], ["20 minutes", 20], ["30 minutes", 30], ["45 minutes", 45], ["1 hour", 60], ["End of chapter", "chapter"]].map(([l, v]) => ({
             label: l, checked: (v === 0 && !this.sleepLabel) || (v === "chapter" ? this.sleepChapter : this.sleepLabel === `${v} min`), onClick: () => this.setSleep(v),
@@ -783,10 +836,31 @@ class Player {
     }
   }
 
+  /** Keep the line you just heard: highlight it and save it to your notes. */
+  async saveSentence() {
+    const tab = this.tab;
+    const ranges = (this.speakRanges || []).filter((r) => r && !r.collapsed);
+    if (!tab || !ranges.length) { toast("Nothing to save just yet."); return; }
+    try {
+      for (const r of ranges) await (tab.mode === "book" ? createTextHighlight(tab, r.cloneRange(), { color: "sun" }) : createHighlight(tab, r.cloneRange(), { color: "sun" }));
+      toast("Saved to your notes", { action: "Add a thought", onAction: () => bus.emit("note-last", tab.docId) });
+    } catch { toast("Couldn't save that line.", { tone: "warn" }); }
+  }
+
   #optionsMenu(anchor) {
     const s = store.settings();
     const toggle = (key, label) => ({ label, checked: s[key] !== false, onClick: async () => { await store.setSettings({ [key]: s[key] === false }); this.refresh(); } });
+    const narrow = matchMedia("(max-width: 760px)").matches;
     menu(anchor, [
+      // on phones the voice and sleep timer live here, to keep the player small
+      narrow ? { label: "Voice…", icon: "user", onClick: () => voiceMenu(anchor) } : null,
+      narrow ? { label: this.sleepLabel ? `Sleep timer · ${this.sleepLabel}` : "Sleep timer…", icon: "moon", onClick: () => menu(anchor, [
+        { heading: "Stop reading after" },
+        ...[["Off", 0], ["10 minutes", 10], ["20 minutes", 20], ["30 minutes", 30], ["45 minutes", 45], ["1 hour", 60], ["End of chapter", "chapter"]].map(([l, v]) => ({
+          label: l, checked: (v === 0 && !this.sleepLabel) || (v === "chapter" ? this.sleepChapter : this.sleepLabel === `${v} min`), onClick: () => this.setSleep(v),
+        })),
+      ]) } : null,
+      narrow ? "-" : null,
       { heading: "While listening" },
       toggle("wordHighlight", "Highlight each word"),
       toggle("characterVoices", "Character voices for dialogue"),
@@ -813,7 +887,7 @@ function voiceMenu(anchor) {
     { heading: "Device voices · instant" },
     ...sys.map((v) => ({ label: v.name + (v.natural ? " (natural)" : ""), checked: !nat && voice.currentSystemVoice()?.id === v.id, onClick: () => { voice.prefs.system = v.id; voice.prefs.engine = "system"; } })),
     "-",
-    { label: "All voice settings", icon: "settings", onClick: () => { location.hash = "#/settings"; } },
+    { label: "All voice settings", icon: "settings", onClick: () => { location.hash = "#/settings?page=listening"; } },
   ]);
 }
 

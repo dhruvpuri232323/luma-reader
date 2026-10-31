@@ -130,6 +130,8 @@ Google asks you to confirm about once an hour while the app is open (a quick win
 | Google Drive says "redirect_uri_mismatch" or "origin not allowed" | Google Drive step 5: add your site address to Authorized JavaScript origins (it can take a few minutes to apply) |
 | Google Drive says "access blocked" / "app not verified" | Google Drive step 3: add yourself as a test user, or publish the app |
 | A web article won't load | Some sites block readers. Open the page and use the “Save to Luma” button (Settings → Reading) instead |
+| Fast mode isn't offered on a Snapdragon (Qualcomm Adreno) laptop | Edge/Chrome keep the graphics chip switched off for web apps on Windows on Arm. Open `edge://flags/#enable-unsafe-webgpu` (or `chrome://flags/#enable-unsafe-webgpu`) in a normal browser window, set **Unsafe WebGPU Support** to **Enabled**, click **Restart**, reopen Luma and choose **Fast** in Settings → Listening. Standard mode works without this |
+| Read-aloud stops part-way through a book | Update to the latest version (it reads through scene breaks and dashes). If it still stops, press ▶ again — it carries on from the same sentence |
 | No daily reminder notification | Notifications with the app closed need an installed app on Chrome/Edge (Android or desktop). Elsewhere, use “Add a daily reminder to my calendar” in Words → 🔔 |
 
 ## Optional: deploy the rules from GitHub automatically
