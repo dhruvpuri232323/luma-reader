@@ -80,8 +80,8 @@ export class BookModel {
       const counts = new Map();
       const sizes = new Map();
       let chars = 0, words = 0, textPages = 0;
-      for (const p of sample) {
-        const { lines } = await this.lines(p);
+      const read = await Promise.all(sample.map((p) => this.lines(p))); // all at once — the PDF engine queues them
+      for (const { lines } of read) {
         let pc = 0;
         for (const l of lines) {
           const k = Math.round(l.size * 2) / 2;

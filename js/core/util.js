@@ -64,7 +64,7 @@ export function safeFileName(name = "file") {
   const ext = dot > 0 ? name.slice(dot).replace(/[^\w.]/g, "") : "";
   let base = (dot > 0 ? name.slice(0, dot) : name)
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[–—]/g, "-").replace(/[‘’`]/g, "'").replace(/[“”"]/g, "")
+    .replace(/\s*:\s*/g, " - ").replace(/[–—]/g, "-").replace(/[‘’`]/g, "'").replace(/[“”"]/g, "")
     .replace(/[\\/:*?<>|]+/g, "-").replace(/[^\x20-\x7e]/g, "").replace(/\s+/g, " ").trim();
   if (!base.replace(/[-' .]/g, "")) base = "luma";
   return base.slice(0, 120) + ext;

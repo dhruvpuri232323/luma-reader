@@ -14,8 +14,17 @@ import { toast } from "../ui/overlay.js";
 const LEVELS = { hard: { label: "Rare words only", max: 1.2 }, unusual: { label: "Rare and unusual", max: 4 } };
 const cache = new Map(); // `${docId}:${page}` → scan
 
+let freqCache = null; // word → { f, at }, loaded from the device in one go
+async function cachedFreqs() {
+  if (!freqCache) {
+    freqCache = new Map();
+    for (const r of await idb.getAll("freq").catch(() => [])) freqCache.set(r.id, r);
+  }
+  return freqCache;
+}
+
 export async function frequency(w) {
-  const cached = await idb.get("freq", w).catch(() => null);
+  const cached = (await cachedFreqs()).get(w);
   if (cached && Date.now() - cached.at < 120 * 864e5) return cached.f;
   try {
     const r = await fetch(`https://api.datamuse.com/words?sp=${encodeURIComponent(w)}&md=f&max=1`);
@@ -24,7 +33,9 @@ export async function frequency(w) {
     const hit = data[0]?.word === w ? data[0] : null;
     const tag = hit?.tags?.find((t) => t.startsWith("f:"));
     const f = hit ? Number(tag?.slice(2) || 0) : 0;
-    idb.put("freq", { id: w, f, at: Date.now() }).catch(() => {});
+    const rec = { id: w, f, at: Date.now() };
+    freqCache.set(w, rec);
+    idb.put("freq", rec).catch(() => {});
     return f;
   } catch {
     return null;
@@ -48,8 +59,10 @@ export async function scanHardWords(tab, fromPage) {
   if (cache.has(key)) return cache.get(key);
   const counts = new Map(), first = new Map(), caps = new Map();
   let end = start;
+  const span = Array.from({ length: Math.max(0, Math.min(model.numPages, start + 29) - start + 1) }, (_, n) => start + n);
+  const pagesRead = await Promise.all(span.map((p) => model.page(p)));
   for (let p = start; p <= model.numPages && p < start + 30; p++) {
-    const blocks = await model.page(p);
+    const blocks = pagesRead[p - start];
     if (p > start + 2 && blocks.some((b) => b.type === "h" && b.level === 2)) break;
     end = p;
     for (const b of blocks) {
@@ -77,15 +90,17 @@ export async function scanHardWords(tab, fromPage) {
     cands.push(w);
   }
   cands.sort((a, b) => b.length - a.length);
-  const list = cands.slice(0, 260);
+  const list = cands.slice(0, 180);
   const freqs = new Map();
-  let offline = false;
+  let offline = !navigator.onLine;
+  let failures = 0;
   let i = 0;
-  await Promise.all(Array.from({ length: 6 }, async () => {
+  await cachedFreqs();
+  await Promise.all(Array.from({ length: 10 }, async () => {
     while (i < list.length) {
       const w = list[i++];
-      const f = await frequency(w);
-      if (f == null) offline = true;
+      const f = offline ? (freqCache.get(w)?.f ?? null) : await frequency(w);
+      if (f == null && ++failures > 4) offline = true; // no connection: stop asking
       freqs.set(w, f);
     }
   }));

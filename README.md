@@ -26,9 +26,10 @@ A calm reader for PDFs, EPUB books and web articles, on laptop and phone. It set
 **Listen like an audiobook**
 - Press the headphones (or L): read aloud sentence by sentence with natural pauses; **the sentence and the very word being spoken light up, and the page turns or scrolls by itself to follow the voice**. Scroll away and it waits, with a **Back to the voice** button.
 - **Character voices**: Luma works out who is speaking each line of dialogue (“said Mary”, “she asked”, who is acting in the paragraph, the back-and-forth of a conversation) and gives each character their own voice — women and men in fitting voices — while the narrator keeps yours. Change any of them under *Who's who*.
-- **Natural voices** run on your device (Kokoro, ~90 MB once, then offline). Until then, the best voice your device has.
+- **No pauses between sentences**: the natural voice is made well ahead on several processor cores at once and each sentence is lined up on the audio clock to start the moment the last one ends — only the pause a narrator would leave. It loads quietly while you read, so Listen starts at once.
+- **Natural voices** run on your device (Kokoro, ~90 MB once, then offline). **Fast mode** runs them on your graphics chip (WebGPU) — several times quicker on most laptops. Until the voice is ready, the best voice your device has.
 - Skips citations like (Smith, 2004) and [12], figure captions and footnote markers; **your own pronunciations** for names it gets wrong.
-- **Save a chapter as an audio file** to play in any podcast or music app.
+- **Save as an audiobook**: this chapter, or the whole book as one file per chapter (straight into a folder on Chrome/Edge) — made in parallel while you keep reading.
 - Speed, sleep timer, headset and lock-screen controls; keeps playing with the screen off on phones.
 
 **Understand every word**
@@ -118,7 +119,7 @@ node scripts/serve.mjs &      # keep running
 npm test
 ```
 
-The test (106 checks) drives a laptop, a phone (Pixel 7) and a tablet in Chromium with stand-ins for Firebase, Google Drive, the dictionaries, the article reader and the voice model: Page and Book view, typography, page turns and page curl, scroll layout, ruler, auto-scroll, footnotes, EPUB and web articles, dictionary fallbacks, “Words here”, highlights across both views, listening with character voices and word-by-word follow-along, chapter audio export, search inside books, tags and the commonplace book, exports (Markdown/Obsidian/Anki/quote cards), practice modes, sync through Firebase and through Drive, and reopening offline. Screenshots land in `tests/output/`. `tests/fixtures/make_v3_fixtures.py` rebuilds the sample EPUB and footnoted PDF.
+The test (109 checks) drives a laptop, a phone (Pixel 7) and a tablet in Chromium with stand-ins for Firebase, Google Drive, the dictionaries, the article reader and the voice model: Page and Book view, typography, page turns and page curl, scroll layout, ruler, auto-scroll, footnotes, EPUB and web articles, dictionary fallbacks, “Words here”, highlights across both views, listening with character voices and word-by-word follow-along, chapter audio export, search inside books, tags and the commonplace book, exports (Markdown/Obsidian/Anki/quote cards), practice modes, sync through Firebase and through Drive, and reopening offline. Screenshots land in `tests/output/`. `tests/fixtures/make_v3_fixtures.py` rebuilds the sample EPUB and footnoted PDF.
 
 ## Credits
 

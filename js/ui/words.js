@@ -57,10 +57,10 @@ function render() {
           { label: "Anki flashcards (.txt)", icon: "cards", onClick: () => { downloadAnki(store.list("words")); toast("Exported — in Anki use File › Import"); } },
         ]) }, icon("download", 19)) : null,
         el("button.icon-btn", { "aria-label": "Daily reminder", title: "Daily review reminder", onclick: () => reminderDialog() }, icon("bell", 19)),
-        el("button.btn", { onclick: addWordManually }, icon("plus", 18), el("span", {}, "Add word")),
+        el("button.btn", { onclick: addWordManually, title: "Add a word" }, icon("plus", 18), el("span.hide-narrow", {}, "Add word")),
         all.length ? el("button.btn", { onclick: (e) => practiceMenu(e.currentTarget, list.length ? list : all) }, icon("sparkle", 18), el("span", {}, "Practise")) : null,
-        el("button.btn.primary", { onclick: () => flashcards(due, "review"), disabled: !due.length },
-          icon("calendar", 18), el("span", {}, due.length ? `Review ${due.length} due` : "Nothing due")))),
+        due.length ? el("button.btn.primary", { onclick: () => flashcards(due, "review") }, icon("calendar", 18), el("span", {}, `Review ${due.length} due`))
+          : all.length ? el("span.caught-up", {}, icon("check", 16), "All caught up") : null)),
     all.length ? goalStrip(due.length) : null,
     all.length ? el("div.lib-tools", {},
       el("label.search-wrap", {}, icon("search", 18), el("input.input.search", {

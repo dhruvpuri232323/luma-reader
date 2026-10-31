@@ -179,6 +179,7 @@ const initScript = ({ kokoroUrl }) => {
   } } };
   // Natural-voice model stand-in
   window.__LUMA_KOKORO_URLS__ = [kokoroUrl];
+  window.__LUMA_TTS_WORKERS__ = 3;
   // Device voices stand-in (headless browsers have none)
   window.__spoken = [];
   const voices = [
@@ -193,7 +194,8 @@ const initScript = ({ kokoroUrl }) => {
       if (this.speaking || !this.q.length) return;
       const u = this.q.shift();
       this.speaking = true;
-      window.__spoken.push({ text: u.text, voice: u.voice?.name, pitch: u.pitch });
+      window.__spoken.push({ text: u.text, voice: u.voice?.name, pitch: u.pitch, at: performance.now() });
+      u.onstart?.();
       this.cur = setTimeout(() => { this.speaking = false; u.onend?.(); this.next(); }, 260);
     },
     cancel() { clearTimeout(this.cur); this.speaking = false; this.q = []; },
@@ -503,6 +505,18 @@ await laptop.waitForSelector(".player");
 await laptop.waitForFunction(() => window.__luma.player.i >= 2, null, { timeout: 15000 }).then(
   () => ok(true, "natural voice reads sentence after sentence"), () => ok(false, "natural voice reads sentence after sentence"));
 ok(/natural voice/.test(await laptop.locator(".pl-line1").textContent()), "player shows the natural voice in use");
+await laptop.waitForFunction(() => (window.__luma.player.timeline || []).length >= 6, null, { timeout: 15000 }).catch(() => {});
+const gaps = await laptop.evaluate(() => {
+  const t = window.__luma.player.timeline, s = window.__luma.player.sentences;
+  const out = [];
+  for (let n = 1; n < t.length; n++) {
+    const prev = s[t[n - 1].i];
+    if (t[n].i === t[n - 1].i || !(prev.paraEnd || prev.heading)) out.push(t[n].start - t[n - 1].end);
+  }
+  return out;
+});
+ok(gaps.length >= 3 && Math.max(...gaps) < 0.12, `sentences flow straight into each other — no waiting between them (largest gap ${Math.round(Math.max(...gaps) * 1000)} ms)`);
+ok(await laptop.evaluate(async () => (await import("/js/core/voice.js")).naturalState().workers) >= 2, "the voice is made on several cores at once");
 await laptop.locator('.player [aria-label="Sleep timer"]').click();
 await laptop.locator(".menu-item", { hasText: "End of chapter" }).click();
 ok(await laptop.locator('.player [aria-label="Sleep timer"].on').count() === 1, "sleep timer set");
@@ -620,7 +634,7 @@ ok(said(/Come in/) && ["af_bella", "bf_emma", "af_nicole"].includes(said(/Come i
 ok(said(/Thank you/) && ["am_michael", "bm_george", "am_fenrir", "bm_fable"].includes(said(/Thank you/).voice), `Tom speaks in a man's voice (${said(/Thank you/)?.voice})`);
 ok(said(/why didn/)?.voice === said(/Thank you/)?.voice, "an unattributed reply goes to the right speaker (turn-taking)");
 ok(said(/^\s*said Mary/)?.voice === narrator || trail.some((x) => /rain had not stopped/.test(x.text) && x.voice === narrator), "the narrator keeps your chosen voice");
-ok(await laptop.evaluate(() => CSS.highlights.has("luma-word")), "the word being spoken is highlighted");
+ok(await within(laptop.waitForFunction(() => CSS.highlights.has("luma-word"), null, { timeout: 6000 })), "the word being spoken is highlighted");
 await shot(laptop, "16-character-voices");
 await laptop.locator(".player .pl-more").click();
 await laptop.locator(".menu-item", { hasText: "Who's who" }).click();
@@ -640,7 +654,14 @@ ok(await laptop.evaluate(async () => (await import("/js/reader/player.js")).spee
 
 // chapter as audio
 await laptop.locator(".reader-actions .icon-btn[aria-label='More']").click();
-const [wav] = await Promise.all([laptop.waitForEvent("download", { timeout: 30000 }), laptop.locator(".menu-item", { hasText: "Save this chapter as audio" }).click()]);
+await laptop.locator(".menu-item", { hasText: "Save as an audiobook" }).click();
+await laptop.waitForSelector(".audiobook-dialog .voice-option");
+await shot(laptop, "17b-audiobook-choices");
+const [wav] = await Promise.all([laptop.waitForEvent("download", { timeout: 30000 }), (async () => {
+  await laptop.locator(".audiobook-dialog .voice-option").first().click();
+  await laptop.waitForSelector(".task-card", { timeout: 3000 }).then(() => ok(true, "audiobook progress shows in a corner card while you keep reading"), () => ok(false, "audiobook progress shows in a corner card while you keep reading"));
+  ok(await laptop.locator("dialog[open]").count() === 0, "saving audio doesn't block the page");
+})()]);
 ok(/\.wav$/.test(wav.suggestedFilename()), `the chapter downloads as an audio file (${wav.suggestedFilename()})`);
 
 // footnotes

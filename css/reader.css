@@ -515,3 +515,13 @@ html[data-warm="1"][data-theme="dark"]::after { background: rgb(255 120 20 / cal
   .autoscroll { bottom: 64px; }
   .recap { top: 8px; }
 }
+.pl-line1.busy::after { content: ""; display: inline-block; width: 10px; height: 10px; margin-left: 8px; vertical-align: -1px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
+.task-card {
+  position: fixed; left: calc(16px + var(--rail-w, 88px)); bottom: 24px; z-index: 80; width: min(340px, calc(100vw - 32px));
+  padding: 12px 12px 10px 14px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-lg);
+}
+.task-card .row { gap: 8px; align-items: center; flex-wrap: nowrap; }
+.task-card strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-card .pl-progress.static { margin: 10px 0 6px; }
+.task-card p { margin: 0; }
+@media (max-width: 760px) { .task-card { left: 16px; bottom: calc(76px + var(--safe-b, 0px)); } }

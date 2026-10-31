@@ -48,7 +48,7 @@ export async function runImport(files, { openAfter = false } = {}) {
   const dupes = results.filter((r) => r.status === "duplicate");
   const errors = results.filter((r) => r.status === "error");
   const parts = [];
-  if (added) parts.push(`${added} added`);
+  if (added) parts.push(added === 1 ? `added “${results.find((r) => r.status === "added")?.title || "1 book"}”` : `${added} books added`);
   if (linked) parts.push(`${linked} matched to synced books`);
   if (dupes.length) parts.push(`${dupes.length} already in your library`);
   if (errors.length) parts.push(`${errors.length} couldn't be opened`);
@@ -271,7 +271,7 @@ function emptyState() {
   return el("section.empty", {},
     el("div.empty-art", { "aria-hidden": "true" }, el("span"), el("span"), el("span")),
     el("h2", {}, "Add your first book"),
-    el("p.muted", {}, "PDFs, EPUB books, text files, or any article on the web. Drop files anywhere on this window, or choose them below. Sign in under Settings to sync your progress, words and notes to your other devices."),
+    el("p.muted", {}, "PDFs, EPUB books, text files, or any article on the web. Drop files anywhere on this window, or choose them below."),
     el("div.row.wrap.center", {},
       el("button.btn.primary.lg", { onclick: pickAndImport }, icon("upload", 18), el("span", {}, "Choose files")),
       el("button.btn.lg", { onclick: () => articleDialog() }, icon("link", 18), el("span", {}, "Add a web article")),

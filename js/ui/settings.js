@@ -7,7 +7,7 @@ import { firebaseConfigured } from "../sync/firebase.js";
 import { exportBackup, restoreBackup, wipeDevice } from "../data/backup.js";
 import { ACCENTS, cue } from "../core/feel.js";
 import { icon } from "./icons.js";
-import { toast, confirmDialog } from "./overlay.js";
+import { toast, confirmDialog, dialog } from "./overlay.js";
 import { installState, promptInstall } from "../core/pwa.js";
 import { typographyControls } from "./typography.js";
 import * as voice from "../core/voice.js";
@@ -48,7 +48,7 @@ function seg(key, options) {
 function render() {
   const s = store.settings();
   setKids(root, 
-    el("header.view-head", {}, el("div.view-title", {}, el("h1", {}, "Settings"), el("p.muted", {}, "Changes apply instantly and sync to your other devices"))),
+    el("header.view-head", {}, el("div.view-title", {}, el("h1", {}, "Settings"), el("p.muted", {}, sync.available || drive.enabled ? "Changes apply instantly and sync to your other devices" : "Changes apply instantly"))),
     accountSection(),
     driveSection(),
     section("Reading", "How books look in Book view. Changes show in the preview straight away.",
@@ -90,8 +90,11 @@ function accountSection() {
       el("div.callout", {},
         icon("cloudOff", 22),
         el("div", {},
-          el("strong", {}, "Running in local mode"),
-          el("p", {}, "Everything is saved on this device. To sync books, progress, words and notes between your phone and laptop, add your Firebase project to js/firebase-config.js in the GitHub repository — docs/SETUP.md walks through it in about ten minutes."))));
+          el("strong", {}, drive.configured ? "Sync through Google Drive below" : "Everything is saved on this device"),
+          el("p", {}, drive.configured
+            ? "Connect Google Drive to keep your books, notes, words and progress the same on your phone and laptop."
+            : "Your books, notes and words are safe here. To have them on your phone and laptop too, turn on sync — it's free and takes about ten minutes, once."),
+          drive.configured ? null : el("button.btn.sm", { onclick: syncHelp }, "How to turn on sync"))));
   }
   const u = sync.user;
   const label = {
@@ -160,6 +163,7 @@ function voiceSection() {
       ns.status === "ready" || ns.status === "loading" ? el("span.muted.small", {}, ns.status === "ready" ? "On" : "")
         : el("button.btn.sm.primary", { onclick: () => { voice.prefs.engine = "natural"; voice.loadNatural().catch((e) => toast(e.message, { tone: "warn" })); } }, icon("download", 16), el("span", {}, ns.status === "error" ? "Try again" : "Download now"))),
     list(voice.NATURAL_VOICES, "natural", voice.prefs.natural),
+    speedRow(),
     row("Device voices", sys.length ? "Built into this device — instant, but more robotic. Natural-sounding ones are listed first." : "This browser has no built-in voices.", el("span")),
     sys.length ? list(sys.slice(0, 8).map((v) => ({ id: v.id, name: v.name + (v.natural ? " · natural" : ""), desc: v.lang })), "system", curSys) : null,
     row("Speed", null, el("div.range-wrap", {},
@@ -174,11 +178,7 @@ function voiceSection() {
 }
 
 function driveSection() {
-  if (!drive.configured) {
-    return section("Google Drive", null, el("div.callout", {}, icon("drive", 22), el("div", {},
-      el("strong", {}, "Keep your books in your own Google Drive — free"),
-      el("p", {}, "Add a Google client ID to js/firebase-config.js (docs/SETUP.md, “Google Drive”) and books you add on one device open on all the others. It can also sync your notes, words and progress without Firebase."))));
-  }
+  if (!drive.configured) return null; // explained in "How to turn on sync"
   const st = drive.status;
   if (!drive.enabled) {
     return section("Google Drive", "Your book files — and, if you like, your notes, words and progress — kept in a “Luma Reader” folder in your own Google Drive. Free, private, and Luma can only see the files it puts there.",
@@ -197,6 +197,50 @@ function driveSection() {
     opt("files", drive.syncFiles, "Book files", "PDFs, EPUBs and articles are kept in Drive and appear on your other devices"),
     opt("data", drive.syncData, "Notes, words & progress", firebaseConfigured() ? "Also keep a copy in Drive (Firebase already syncs these)" : "Sync everything else through Drive too — no Firebase needed"),
     row("Disconnect", "Files already in your Drive stay there", el("button.btn.sm", { onclick: async () => { if (await confirmDialog("Disconnect Google Drive?", "Luma stops syncing through Drive on this device. Your files stay in your Drive.", { confirm: "Disconnect" })) { drive.disconnect(); render(); } } }, "Disconnect")));
+}
+
+/** Standard (processor) or Fast (graphics chip) natural voice. */
+function speedRow() {
+  const mode = voice.naturalMode();
+  const ns = voice.naturalState();
+  const control = el("div.seg", {},
+    el("button" + (mode === "standard" ? ".on" : ""), { onclick: () => switchMode("standard") }, "Standard"),
+    el("button" + (mode === "fast" ? ".on" : ""), { onclick: () => switchMode("fast") }, "Fast"));
+  const hint = el("span.set-hint", {}, mode === "fast"
+    ? `Uses your graphics chip — several times faster on most laptops (${voice.MODE_SIZE("fast")} once).`
+    : `Works on every device (${voice.MODE_SIZE("standard")}).${ns.workers > 1 ? ` Using ${ns.workers} processor cores at once.` : ""} Fast mode uses the graphics chip instead and is several times quicker on most laptops.`);
+  voice.fastModeAvailable().then((ok) => { if (!ok && mode !== "fast") { control.lastChild.disabled = true; control.lastChild.title = "This device or browser can't use the graphics chip for the voice"; } });
+  return el("div.set-row", {}, el("div.set-text", {}, el("span.set-label", {}, "Natural voice speed"), hint), control);
+}
+
+async function switchMode(mode) {
+  if (mode === voice.naturalMode()) return;
+  if (mode === "fast" && !(await confirmDialog("Use the fast voice?", `The fast voice runs on your graphics chip and makes speech several times faster, so long books and audiobooks are ready much sooner. It's a one-time ${voice.MODE_SIZE("fast")} download.`, { confirm: "Download & switch" }))) return;
+  toast(mode === "fast" ? "Getting the fast voice ready…" : "Switching to the standard voice…");
+  voice.prefs.engine = "natural";
+  voice.setNaturalMode(mode).then(() => toast(voice.naturalMode() === "fast" ? "Fast voice ready" : "Standard voice ready")).catch((e) => toast(e.message, { tone: "warn" }));
+}
+
+function syncHelp() {
+  const step = (n, title, text) => el("li.help-step", {}, el("span.help-n", {}, n), el("div", {}, el("strong", {}, title), el("p.muted.small", {}, text)));
+  dialog({
+    title: "Turn on sync",
+    className: "help-dialog",
+    body: (c) => c.append(
+      el("p", {}, "Sync is set up once, in the GitHub repository that hosts your copy of Luma. Pick either option (or both) — both are free."),
+      el("h3", {}, "Option 1 · Firebase — progress, notes and words"),
+      el("ol.help-steps", {},
+        step(1, "Create a free Firebase project", "console.firebase.google.com → Create a project → add a Web app."),
+        step(2, "Turn on Google sign-in and Firestore", "Authentication → Google → Enable. Firestore → Create database, then paste the rules from firebase/firestore.rules."),
+        step(3, "Paste the keys", "Copy the six firebaseConfig values into js/firebase-config.js and commit.")),
+      el("h3", {}, "Option 2 · Google Drive — your book files too"),
+      el("ol.help-steps", {},
+        step(1, "Enable the Google Drive API", "Google Cloud Console → APIs & Services → Library → Google Drive API."),
+        step(2, "Get a client ID", "Credentials → OAuth client ID (Web). Add your site address under Authorized JavaScript origins."),
+        step(3, "Paste it", "Put the client ID into GOOGLE_CLIENT_ID in js/firebase-config.js and commit.")),
+      el("p.muted.small", {}, "The full guide with screenshots-worth of detail is docs/SETUP.md in your repository.")),
+    actions: [{ label: "Done", primary: true }],
+  });
 }
 
 function friendlyAuthError(err) {

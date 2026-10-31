@@ -36,10 +36,74 @@ export const prefs = {
 };
 
 // ───────── Natural (Kokoro) ─────────
-const nat = { status: "none", progress: 0, error: "", worker: null, pending: new Map(), seq: 0, loading: null, rtf: [] };
+// The model runs in background workers so the page never stutters. Browsers
+// give each worker one processor core, so on laptops several workers make
+// audio in parallel — the voice stays well ahead of the listener. "Fast" mode
+// runs the model on the graphics chip instead (WebGPU), where available.
+const nat = { status: "none", progress: 0, error: "", pool: [], queue: [], pending: new Map(), seq: 0, loading: null, rtf: [], mode: "standard" };
+const MODES = {
+  standard: { dtype: "q8", device: "wasm", size: "about 90 MB" },
+  fast: { dtype: "fp32", device: "webgpu", size: "about 330 MB" },
+};
 
 export function naturalState() {
-  return { status: nat.status, progress: nat.progress, error: nat.error, downloaded: prefs.naturalDownloaded };
+  return { status: nat.status, progress: nat.progress, error: nat.error, downloaded: prefs.naturalDownloaded, mode: nat.mode, workers: nat.pool.filter((w) => w.ready).length };
+}
+
+/** Is the graphics-chip mode possible on this device? */
+export async function fastModeAvailable() {
+  try { return Boolean(navigator.gpu && (await navigator.gpu.requestAdapter())); } catch { return false; }
+}
+export const naturalMode = () => localStorage.getItem("luma.voice.mode") || "standard";
+export const MODE_SIZE = (m) => MODES[m]?.size || "";
+
+/** How many workers this device can comfortably run at once. */
+function poolSize(mode) {
+  if (mode === "fast") return 1;
+  const cores = navigator.hardwareConcurrency || 4;
+  const mem = navigator.deviceMemory || 8;
+  const phone = matchMedia("(pointer: coarse)").matches && innerWidth < 900;
+  let n = Math.max(1, Math.min(3, Math.floor(cores / 2) - 1));
+  if (phone || mem <= 4) n = Math.min(n, 2);
+  if (mem <= 2) n = 1;
+  return window.__LUMA_TTS_WORKERS__ || n;
+}
+
+function spawn(mode, onProgress) {
+  return new Promise((resolve, reject) => {
+    let worker;
+    try { worker = new Worker(new URL("./tts-worker.js", import.meta.url), { type: "module" }); }
+    catch { reject(new Error("This browser can't run the natural voice.")); return; }
+    const w = { worker, ready: false, busy: null };
+    worker.onmessage = ({ data }) => {
+      if (data.type === "progress") onProgress?.(data.p || {});
+      else if (data.type === "ready") { w.ready = true; resolve(w); }
+      else if (data.type === "error") { try { worker.terminate(); } catch {} reject(new Error(data.error || "load failed")); }
+      else if (data.type === "audio" || data.type === "audio-error") {
+        w.busy = null;
+        const job = nat.pending.get(data.id);
+        nat.pending.delete(data.id);
+        if (job) {
+          if (data.type === "audio") {
+            const secs = data.pcm.length / data.rate;
+            if (secs > 0.4) { nat.rtf.push(data.ms / 1000 / secs); if (nat.rtf.length > 10) nat.rtf.shift(); }
+            job.resolve({ pcm: data.pcm, rate: data.rate });
+          } else job.reject(new Error(data.error));
+        }
+        pump();
+      }
+    };
+    worker.onerror = (e) => {
+      if (!w.ready) { reject(new Error(e.message || "worker error")); return; }
+      w.ready = false;
+      nat.pool = nat.pool.filter((x) => x !== w);
+      if (w.busy) { nat.pending.get(w.busy)?.reject(new Error("voice stopped")); nat.pending.delete(w.busy); }
+      if (!nat.pool.length) { nat.status = "error"; nat.error = "The natural voice stopped."; nat.loading = null; bus.emit("voice-state"); }
+      pump();
+    };
+    const m = MODES[mode];
+    worker.postMessage({ type: "load", urls: window.__LUMA_KOKORO_URLS__ || KOKORO_URLS, model: MODEL, dtype: m.dtype, device: m.device });
+  });
 }
 
 export function loadNatural() {
@@ -48,76 +112,117 @@ export function loadNatural() {
   nat.status = "loading";
   nat.error = "";
   nat.progress = 0;
+  nat.mode = naturalMode();
   bus.emit("voice-state");
-  nat.loading = new Promise((resolve, reject) => {
-    const fail = (msg) => {
-      nat.status = "error";
-      nat.error = msg;
-      nat.loading = null;
-      try { nat.worker?.terminate(); } catch {}
-      nat.worker = null;
-      bus.emit("voice-state");
-      reject(new Error(msg));
-    };
-    let worker;
+  const files = new Map();
+  const onProgress = (p) => {
+    if (p.file && p.total) files.set(p.file, [p.loaded || 0, p.total]);
+    let l = 0, t = 0;
+    files.forEach(([a, b]) => { l += a; t += b; });
+    nat.progress = t ? Math.min(0.99, l / t) : nat.progress;
+    bus.emit("voice-state");
+  };
+  nat.loading = (async () => {
+    let first;
     try {
-      worker = new Worker(new URL("./tts-worker.js", import.meta.url), { type: "module" });
+      first = await spawn(nat.mode, onProgress);
     } catch (e) {
-      fail("This browser can't run the natural voice.");
-      return;
-    }
-    nat.worker = worker;
-    const files = new Map();
-    worker.onmessage = ({ data }) => {
-      if (data.type === "progress") {
-        const p = data.p || {};
-        if (p.file && p.total) files.set(p.file, [p.loaded || 0, p.total]);
-        let l = 0, t = 0;
-        files.forEach(([a, b]) => { l += a; t += b; });
-        nat.progress = t ? Math.min(0.99, l / t) : nat.progress;
-        bus.emit("voice-state");
-      } else if (data.type === "ready") {
-        nat.status = "ready";
-        nat.progress = 1;
-        localStorage.setItem(LS.ready, "1");
-        bus.emit("voice-state");
-        resolve();
-      } else if (data.type === "error") {
-        fail(navigator.onLine ? "The natural voice couldn't be downloaded. " + (data.error || "") : "You're offline — the natural voice downloads the first time you're online.");
-      } else if (data.type === "audio" || data.type === "audio-error") {
-        const job = nat.pending.get(data.id);
-        if (!job) return;
-        nat.pending.delete(data.id);
-        if (data.type === "audio") {
-          const secs = data.pcm.length / data.rate;
-          if (secs > 0.5) { nat.rtf.push(data.ms / 1000 / secs); if (nat.rtf.length > 6) nat.rtf.shift(); }
-          job.resolve({ pcm: data.pcm, rate: data.rate });
-        } else job.reject(new Error(data.error));
+      if (nat.mode === "fast") {
+        // the graphics chip didn't work out — fall back to the standard engine
+        localStorage.setItem("luma.voice.mode", "standard");
+        nat.mode = "standard";
+        bus.emit("toast", "Fast mode isn't available on this device — using the standard natural voice.");
+        try { first = await spawn("standard", onProgress); } catch (e2) { e = e2; }
       }
-    };
-    worker.onerror = (e) => fail("The natural voice stopped: " + (e.message || "worker error"));
-    worker.postMessage({ type: "load", urls: window.__LUMA_KOKORO_URLS__ || KOKORO_URLS, model: MODEL, dtype: "q8", device: "wasm" });
-  });
+      if (!first) {
+        nat.status = "error";
+        nat.error = navigator.onLine ? "The natural voice couldn't be downloaded. " + (e?.message || "") : "You're offline — the natural voice downloads the first time you're online.";
+        nat.loading = null;
+        bus.emit("voice-state");
+        throw new Error(nat.error);
+      }
+    }
+    nat.pool = [first];
+    nat.status = "ready";
+    nat.progress = 1;
+    localStorage.setItem(LS.ready, "1");
+    bus.emit("voice-state");
+    nat.grown = false;
+    pump();
+  })();
   return nat.loading;
 }
 
-/** Real-time factor: generation time ÷ audio length (lower is better; > 1 means slower than speech). */
-export const naturalSpeed = () => (nat.rtf.length ? nat.rtf.reduce((a, b) => a + b, 0) / nat.rtf.length : 0);
+/** More workers once reading starts — the model is already downloaded, so each starts quickly. */
+function grow() {
+  if (nat.grown || nat.status !== "ready") return;
+  nat.grown = true;
+  const want = poolSize(nat.mode);
+  for (let k = nat.pool.length; k < want; k++) {
+    spawn(nat.mode).then((w) => { if (nat.status === "ready") { nat.pool.push(w); bus.emit("voice-state"); pump(); } else w.worker.terminate(); }).catch(() => {});
+  }
+}
 
-export function synthNatural(text, voiceId = prefs.natural, speed = prefs.rate) {
-  if (nat.status !== "ready" || !nat.worker) return Promise.reject(new Error("not ready"));
+/** Get the natural voice ready in the background while you read, so Listen starts at once. */
+export function warmUp() {
+  if (prefs.engine !== "natural" || !prefs.naturalDownloaded || nat.status !== "none") return;
+  const go = () => loadNatural().catch(() => {});
+  if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 4000 }); else setTimeout(go, 1500);
+}
+
+/** Switch between the standard (processor) and fast (graphics chip) engines. */
+export async function setNaturalMode(mode) {
+  localStorage.setItem("luma.voice.mode", mode);
+  for (const w of nat.pool) { try { w.worker.terminate(); } catch {} }
+  nat.pool = [];
+  nat.queue.forEach((j) => j.reject(new Error("cancelled")));
+  nat.queue = [];
+  nat.pending.forEach((j) => j.reject(new Error("cancelled")));
+  nat.pending.clear();
+  nat.status = "none";
+  nat.loading = null;
+  nat.grown = false;
+  nat.rtf = [];
+  bus.emit("voice-state");
+  return loadNatural();
+}
+
+function pump() {
+  for (const w of nat.pool) {
+    if (!w.ready || w.busy || !nat.queue.length) continue;
+    const job = nat.queue.shift();
+    w.busy = job.id;
+    nat.pending.set(job.id, job);
+    w.worker.postMessage({ type: "say", id: job.id, text: job.text, voice: job.voice, speed: job.speed });
+  }
+}
+
+/** Real-time factor for the whole pool: time to make a second of speech (lower is better; > 1 means slower than speaking). */
+export const naturalSpeed = () => {
+  if (!nat.rtf.length) return 0;
+  const avg = nat.rtf.reduce((a, b) => a + b, 0) / nat.rtf.length;
+  return avg / Math.max(1, nat.pool.filter((w) => w.ready).length);
+};
+
+export function synthNatural(text, voiceId = prefs.natural, speed = prefs.rate, { urgent = false } = {}) {
+  if (nat.status !== "ready" || !nat.pool.length) return Promise.reject(new Error("not ready"));
   const id = ++nat.seq;
-  const p = new Promise((resolve, reject) => nat.pending.set(id, { resolve, reject }));
+  let job;
+  const p = new Promise((resolve, reject) => { job = { id, text, voice: voiceId, speed: Math.max(0.5, Math.min(2, speed)), resolve, reject }; });
   p.jobId = id;
-  nat.worker.postMessage({ type: "say", id, text, voice: voiceId, speed: Math.max(0.5, Math.min(2, speed)) });
+  if (urgent) nat.queue.unshift(job); else nat.queue.push(job);
+  pump();
+  // give the first sentence a head start, then bring in more workers
+  if (!nat.grown && !nat.growTimer) nat.growTimer = setTimeout(() => { nat.growTimer = null; grow(); }, window.__LUMA_TTS_WORKERS__ ? 0 : 900);
   return p;
 }
 
 export function cancelNatural(promises) {
-  const ids = promises.map((p) => p?.jobId).filter(Boolean);
-  if (!ids.length || !nat.worker) return;
-  nat.worker.postMessage({ type: "cancel", ids });
-  ids.forEach((id) => { nat.pending.get(id)?.reject(new Error("cancelled")); nat.pending.delete(id); });
+  const ids = new Set(promises.map((p) => p?.jobId).filter(Boolean));
+  if (!ids.size) return;
+  nat.queue = nat.queue.filter((j) => { if (ids.has(j.id)) { j.reject(new Error("cancelled")); return false; } return true; });
+  // jobs already running finish in the worker; their results are simply dropped
+  for (const id of ids) { nat.pending.get(id)?.reject(new Error("cancelled")); nat.pending.delete(id); }
 }
 
 // ───────── audio output ─────────
@@ -126,28 +231,34 @@ const playing = new Set();
 
 export function unlockAudio() {
   try {
-    ctx ||= new (window.AudioContext || window.webkitAudioContext)();
+    ctx ||= new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "playback" });
     if (ctx.state === "suspended") ctx.resume();
   } catch { /* no audio */ }
+  return ctx;
 }
 
-export function playPcm({ pcm, rate }) {
+export const audioTime = () => ctx?.currentTime || 0;
+
+/** Put a clip on the audio timeline at `when` (seconds, audio clock). Clips scheduled back to back play with no gap. */
+export function schedulePcm({ pcm, rate }, when = 0) {
   unlockAudio();
   const buf = ctx.createBuffer(1, pcm.length, rate);
   buf.copyToChannel(pcm, 0);
   const src = ctx.createBufferSource();
   src.buffer = buf;
   src.connect(ctx.destination);
-  const t0 = ctx.currentTime;
-  let stop;
-  const done = new Promise((resolve) => {
-    src.onended = () => { playing.delete(handle); resolve(); };
-    stop = () => { try { src.stop(); } catch {} resolve(); };
-  });
-  const handle = { stop };
+  const start = Math.max(ctx.currentTime + 0.02, when);
+  const handle = { start, end: start + pcm.length / rate, stop: () => { try { src.stop(); } catch {} playing.delete(handle); } };
+  src.onended = () => playing.delete(handle);
   playing.add(handle);
-  src.start();
-  return { done, stop: () => handle.stop(), elapsed: () => ctx.currentTime - t0, duration: pcm.length / rate };
+  src.start(start);
+  return handle;
+}
+
+export function playPcm(audio) {
+  const h = schedulePcm(audio);
+  const done = new Promise((resolve) => setTimeout(resolve, Math.max(0, (h.end - ctx.currentTime) * 1000)));
+  return { done, stop: h.stop, elapsed: () => ctx.currentTime - h.start, duration: h.end - h.start };
 }
 
 /** 16-bit mono WAV from Float32 samples. */
@@ -229,7 +340,8 @@ export function currentSystemVoice() {
 
 const keep = new Set(); // Chrome drops utterances that aren't referenced → onend never fires
 
-export function speakSystem(text, { rate = prefs.rate, voiceId, pitch = 1, onBoundary } = {}) {
+/** Speak with a device voice. Several can be queued; each starts the moment the previous one ends. */
+export function speakSystem(text, { rate = prefs.rate, voiceId, pitch = 1, onBoundary, onStart } = {}) {
   if (!("speechSynthesis" in window)) return { done: Promise.resolve(false), stop() {} };
   const u = new SpeechSynthesisUtterance(text);
   const v = (voiceId && systemVoices().find((x) => x.id === voiceId)) || currentSystemVoice();
@@ -237,7 +349,8 @@ export function speakSystem(text, { rate = prefs.rate, voiceId, pitch = 1, onBou
   u.rate = rate;
   u.pitch = Math.max(0.5, Math.min(1.6, pitch));
   if (onBoundary) u.onboundary = (e) => { if (e.name !== "sentence") onBoundary(e.charIndex); };
-  const t0 = performance.now();
+  let t0 = performance.now();
+  u.onstart = () => { t0 = performance.now(); onStart?.(); };
   keep.add(u);
   let resolveDone;
   const done = new Promise((resolve) => { resolveDone = resolve; });
@@ -245,7 +358,7 @@ export function speakSystem(text, { rate = prefs.rate, voiceId, pitch = 1, onBou
   u.onerror = () => { keep.delete(u); resolveDone(false); };
   speechSynthesis.resume();
   speechSynthesis.speak(u);
-  return { done, stop: () => { speechSynthesis.cancel(); keep.delete(u); resolveDone(false); }, elapsed: () => (performance.now() - t0) / 1000 };
+  return { done, utterance: u, stop: () => { speechSynthesis.cancel(); keep.delete(u); resolveDone(false); }, elapsed: () => (performance.now() - t0) / 1000 };
 }
 
 export function stopAll() {
@@ -256,9 +369,10 @@ export function stopAll() {
 
 /** Say a single word or short phrase with the best voice available right now. */
 export async function speakOnce(text) {
+  bus.emit("voice-interrupt");
   stopAll();
   if (prefs.engine === "natural" && nat.status === "ready") {
-    try { return await playPcm(await synthNatural(text)).done; } catch { /* fall through */ }
+    try { return await playPcm(await synthNatural(text, prefs.natural, 0.95, { urgent: true })).done; } catch { /* fall through */ }
   }
   return speakSystem(text, { rate: 0.95 }).done;
 }
@@ -266,11 +380,12 @@ export async function speakOnce(text) {
 export const SAMPLE = "Each lamp he touched grew luminous, and the cobbles shone like wet slate.";
 
 export async function preview({ engine, id }) {
+  bus.emit("voice-interrupt");
   stopAll();
   unlockAudio();
   if (engine === "natural") {
     await loadNatural();
-    return playPcm(await synthNatural(SAMPLE, id)).done;
+    return playPcm(await synthNatural(SAMPLE, id, prefs.rate, { urgent: true })).done;
   }
   return speakSystem(SAMPLE, { voiceId: id }).done;
 }

@@ -5,13 +5,19 @@ import { icon } from "./icons.js";
 let toastHost;
 export function toast(message, { action, onAction, duration = 3200, tone } = {}) {
   toastHost ||= document.body.appendChild(el("div.toasts", { role: "status", "aria-live": "polite" }));
-  const t = el("div.toast" + (tone ? "." + tone : ""), {}, el("span", {}, message));
+  // the same message twice in a row: just keep the one on screen
+  const same = [...toastHost.children].find((x) => x.dataset.msg === message && !x.classList.contains("out"));
+  if (same) return () => same.remove();
+  // never more than two at once — the oldest makes way
+  const live = [...toastHost.children].filter((x) => !x.classList.contains("out"));
+  if (live.length >= 2) { const old = live[0]; old.classList.add("out"); old.classList.remove("in"); setTimeout(() => old.remove(), 250); }
+  const t = el("div.toast" + (tone ? "." + tone : ""), { dataset: { msg: message } }, el("span", {}, message));
   if (action) {
     t.append(el("button.toast-action", { onclick: () => { onAction?.(); close(); } }, action));
   }
   toastHost.append(t);
   requestAnimationFrame(() => t.classList.add("in"));
-  const close = () => { t.classList.remove("in"); setTimeout(() => t.remove(), 250); };
+  const close = () => { t.classList.add("out"); t.classList.remove("in"); setTimeout(() => t.remove(), 250); };
   setTimeout(close, duration);
   return close;
 }

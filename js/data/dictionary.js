@@ -154,13 +154,26 @@ export async function lookup(raw, { phrase } = {}) {
   const p = (async () => {
     if (!navigator.onLine) return { status: "offline" };
     try {
-      let entry = null;
-      if (phrase) entry = await wikipedia(phrase);
-      const capitalised = /^\p{Lu}\p{Ll}/u.test(String(raw).trim());
-      if (!entry) entry = await freeDictionary(w, { stems: false }).catch(() => null);
+      // Ask the sources side by side rather than one after another, so a word
+      // that isn't in the first dictionary doesn't cost several round trips.
+      const said = String(raw).trim();
+      const capitalised = /^\p{Lu}\p{Ll}/u.test(said);
+      const quiet = (p) => p.catch(() => null);
+      const pPhrase = phrase ? quiet(wikipedia(phrase)) : null;
+      const pDict = quiet(freeDictionary(w, { stems: false }));
+      const pWp = capitalised ? quiet(wikipedia(said)) : null; // likely a name or place
+      let pWk = null;
+      const hedge = setTimeout(() => { pWk ||= quiet(wiktionary(w, said)); }, 300); // the dictionary is slow today: ask Wiktionary too
+      let entry = pPhrase ? await pPhrase : null;
+      if (!entry) entry = await pDict;
+      clearTimeout(hedge);
       if (!entry) {
-        const [wk, wp] = await Promise.all([wiktionary(w, String(raw).trim()), capitalised || w.length > 3 ? wikipedia(String(raw).trim()) : null]);
-        entry = wk || (await freeDictionary(w).catch(() => null)) || (await wordnet(w)) || wp;
+        pWk ||= quiet(wiktionary(w, said));
+        const pStem = quiet(freeDictionary(w));
+        const pNet = quiet(wordnet(w));
+        const pWiki = pWp || (w.length > 3 ? quiet(wikipedia(said)) : Promise.resolve(null));
+        const [wk, wp] = await Promise.all([pWk, pWiki]);
+        entry = wk || (await pStem) || (await pNet) || wp;
         if (entry && wp && entry !== wp) entry.wiki = { title: wp.word, extract: wp.meanings[0].defs[0].d, thumb: wp.thumb, url: wp.sourceUrl, description: wp.meanings[0].pos };
       }
       if (entry) {

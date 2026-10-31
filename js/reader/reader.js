@@ -18,7 +18,8 @@ import { showDefinition, hideDefinition } from "../ui/definition.js";
 import { icon } from "../ui/icons.js";
 import { toast, menu, dialog, confirmDialog, closeMenus } from "../ui/overlay.js";
 import { cue } from "../core/feel.js";
-import { player, exportChapterAudio, pronunciationsDialog } from "./player.js";
+import { player, audiobookDialog, pronunciationsDialog } from "./player.js";
+import { warmUp } from "../core/voice.js";
 import { AutoScroll } from "./autoscroll.js";
 import { maybeRecap } from "./recap.js";
 import { renderWordsHere } from "./hardwords.js";
@@ -95,6 +96,15 @@ export function mountReader(root) {
   bus.on("tab-ready", (tab) => {
     if (tab.docId === R.active) { renderActions(); if (R.panel) renderPanel(); }
     setTimeout(() => indexInBackground(tab).catch(() => {}), 2500);
+    warmUp();
+    // on a phone, PDF pages are tiny: point to Book view once
+    if (isNarrow() && tab.kind === "pdf" && !localStorage.getItem("luma.tipBook")) {
+      setTimeout(() => {
+        if (tab.mode !== "pdf" || tab.docId !== R.active || document.documentElement.dataset.view !== "reader") return;
+        localStorage.setItem("luma.tipBook", "1");
+        toast("Text small? Book view sets this PDF in your own font and size.", { action: "Try it", onAction: () => openBookView(), duration: 9000 });
+      }, 1500);
+    }
     if (tab.recapFrom) {
       const from = tab.recapFrom;
       tab.recapFrom = null;
@@ -368,14 +378,14 @@ function moreMenu(anchor) {
     narrow ? { label: "Focus mode", icon: "focus", onClick: () => setFocus(true) } : null,
     narrow ? "-" : null,
     ready ? { label: R.auto?.on ? "Stop auto-scroll (A)" : "Auto-scroll at reading speed (A)", icon: "down", checked: R.auto?.on, onClick: () => toggleAuto() } : null,
-    ready && book ? { label: "Reading ruler (R)", icon: "focus", checked: Boolean(s.ruler), onClick: () => toggleRuler() } : null,
+    ready && book ? { label: "Reading ruler (R)", icon: "ruler", checked: Boolean(s.ruler), onClick: () => toggleRuler() } : null,
     ready ? { label: "Words worth knowing here", icon: "words", onClick: () => { R.panel = "words"; renderPanel(); renderActions(); } } : null,
     ready ? "-" : null,
     book || !tab ? null : { label: "Rotate pages", icon: "rotate", onClick: () => tab?.rotate() },
     book || !tab ? null : { label: "Fit page width", icon: "fit", onClick: () => tab?.setZoom("page-width") },
     book || !tab ? null : { label: "Fit whole page", icon: "focus", onClick: () => tab?.setZoom("page-fit") },
     book || !tab ? null : "-",
-    ready ? { label: "Save this chapter as audio", icon: "headphones", onClick: () => exportChapterAudio(tab) } : null,
+    ready ? { label: "Save as an audiobook…", icon: "headphones", onClick: () => audiobookDialog(tab) } : null,
     { label: "Pronunciations…", icon: "sound", onClick: () => pronunciationsDialog() },
     { label: "Export notes…", icon: "file", onClick: () => exportNotesMenu(anchor, { docIds: [tab?.docId], title: tab?.doc?.title || "Notes" }) },
     tab ? { label: `Download the ${tab.kind === "pdf" ? "PDF" : tab.kind === "epub" ? "EPUB" : "book file"}`, icon: "download", onClick: async () => {

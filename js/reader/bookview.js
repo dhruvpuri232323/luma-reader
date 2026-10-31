@@ -197,8 +197,9 @@ export class BookView {
     let words = 0;
     let afterHeading = false;
     let lastP = null;
+    const pages = await Promise.all(Array.from({ length: b - a + 1 }, (_, n) => this.model.page(a + n)));
     for (let p = a; p <= b; p++) {
-      const blocks = await this.model.page(p);
+      const blocks = pages[p - a];
       for (const blk of blocks) {
         let node;
         if (blk.type === "img" && blk.src) {

@@ -63,6 +63,19 @@ export function appendSentences(list, blocks, p, dctx) {
   }
 }
 
+/** When each word starts within a clip (seconds), from word lengths and punctuation pauses. */
+function wordStarts(text, duration) {
+  const words = text.match(/\S+/g) || [];
+  if (!words.length || !duration) return [0];
+  const weight = (w) => w.length + 2 + (/[,;:—–]["”’)]?$/.test(w) ? 4 : /[.!?…]["”’)]?$/.test(w) ? 6 : 0);
+  const total = words.reduce((n, w) => n + weight(w), 0);
+  const lead = Math.min(0.12, duration * 0.04), usable = Math.max(0.2, duration - lead - Math.min(0.2, duration * 0.06));
+  const out = [];
+  let acc = 0;
+  for (const w of words) { out.push(lead + (acc / total) * usable); acc += weight(w); }
+  return out;
+}
+
 class Player {
   constructor() {
     this.tab = null;
@@ -80,8 +93,21 @@ class Player {
     this.layerIndex = new WeakMap();
     this.blockIndex = new WeakMap();
     this.speaker = null;
-    bus.on("voice-state", () => this.renderBar());
-    bus.on("voice-prefs", () => { this.#dropCache(); this.renderBar(); });
+    bus.on("voice-state", () => {
+      if (this.waitNatural && this.state === "playing") {
+        if (this.#useNatural()) { this.waitNatural = false; this.#begin(this.i); return; }
+        if (voice.naturalState().status === "error") { this.waitNatural = false; this.pause(); }
+      }
+      // the natural voice became ready while a device voice was reading: switch at the next sentence
+      if (this.state === "playing" && this.engine === "system" && this.#useNatural()) this.switchPending = true;
+      this.renderBar();
+    });
+    bus.on("voice-prefs", () => {
+      this.#dropCache();
+      if (this.state === "playing") { this.next0 = this.cur?.i >= 0 ? this.cur.i : this.i; this.#begin(this.next0); }
+      this.renderBar();
+    });
+    bus.on("voice-interrupt", () => { if (this.state === "playing") this.pause(); });
     bus.on("user-nav", (tab) => { if (tab === this.tab) this.#userNav(); });
   }
 
@@ -132,15 +158,16 @@ class Player {
     this.#watchManualScroll();
     this.#mediaSession();
     if (isTouch()) voice.keepAlive(true);
-    this.renderBar();
-    this.#run(++this.token);
+    this.next0 = this.i;
+    this.#begin(this.i);
   }
 
   pause() {
     if (this.state !== "playing") return;
-    this.token++;
-    this.wordToken++;
-    voice.stopAll();
+    // remember the sentence being read; resuming starts it again so nothing is missed
+    const at = this.cur?.i >= 0 ? this.cur.i : this.i;
+    this.#halt();
+    this.i = at;
     voice.keepAlive(false);
     this.state = "paused";
     this.renderBar();
@@ -151,30 +178,26 @@ class Player {
     if (this.state !== "paused") return;
     voice.unlockAudio();
     if (isTouch()) voice.keepAlive(true);
-    this.state = "playing";
-    this.renderBar();
     if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
-    this.#run(++this.token);
+    this.next0 = this.i;
+    this.#begin(this.i);
   }
 
   toggle() { this.state === "playing" ? this.pause() : this.resume(); }
 
   async skip(delta) {
     if (!this.active) return;
-    this.token++;
-    this.wordToken++;
-    voice.stopAll();
-    if (delta > 0) await this.#extend(this.i + delta + 3);
-    this.i = clamp(this.i + delta, 0, Math.max(0, this.sentences.length - 1));
+    const from = this.cur?.i >= 0 ? this.cur.i : this.i;
+    if (delta > 0) await this.#extend(from + delta + 3);
+    const to = clamp(from + delta, 0, Math.max(0, this.sentences.length - 1));
     this.following = true;
-    if (this.state === "playing") this.#run(++this.token);
-    else this.#show(this.sentences[this.i]);
+    this.next0 = to;
+    if (this.state === "playing") this.#begin(to);
+    else { this.i = to; this.cur = { i: -1, k: -1 }; this.#enterSentence(to); this.renderBar(); }
   }
 
   stop(silent = false) {
-    this.token++;
-    this.wordToken++;
-    voice.stopAll();
+    this.#halt();
     voice.keepAlive(false);
     this.#dropCache();
     clearTimeout(this.sleepTimer);
@@ -200,10 +223,12 @@ class Player {
     if (!silent) bus.emit("player-stopped");
   }
 
-  setRate(r) {
-    store.setSettings({ speechRate: r });
+  async setRate(r) {
+    await store.setSettings({ speechRate: r });
     this.#dropCache();
-    if (this.state === "playing") { this.token++; voice.stopAll(); this.#run(++this.token); }
+    const at = this.cur?.i >= 0 ? this.cur.i : this.i;
+    this.next0 = at;
+    if (this.state === "playing") this.#begin(at);
     this.renderBar();
   }
 
@@ -269,36 +294,12 @@ class Player {
     }
   }
 
-  // ───────── playback loop ─────────
-  async #run(token) {
-    while (token === this.token) {
-      if (this.i >= this.sentences.length - 4) await this.#extend(this.i + 10);
-      if (token !== this.token) return;
-      const s = this.sentences[this.i];
-      if (!s) { this.#finished(); return; }
-      if (this.sleepChapter && s.heading && this.i > this.startI) {
-        this.pause();
-        this.sleepChapter = false;
-        this.sleepLabel = "";
-        toast("Sleep timer — paused at the end of the chapter");
-        return;
-      }
-      await this.#show(s);
-      if (token !== this.token) return;
-      this.speaker = s.parts[0]?.speaker || null;
-      this.renderBar();
-      this.#prefetch();
-      await this.#speak(s, this.i, token);
-      if (token !== this.token) return;
-      // natural pauses: longer after headings and paragraph ends
-      const gap = s.heading ? 650 : s.paraEnd ? 380 : 90;
-      await new Promise((r) => setTimeout(r, gap / (voice.prefs.rate || 1)));
-      if (token !== this.token) return;
-      this.i++;
-      const next = this.sentences[this.i];
-      if (next && next.page !== s.page) this.tab.savePosition(next.page);
-    }
-  }
+  // ───────── playback ─────────
+  // Natural voice: sentences are made ahead of time (several at once) and laid
+  // end to end on the audio clock, so one flows into the next with only the
+  // pause a narrator would leave. The highlight follows the clock.
+  // Device voice: the next sentence is always queued, so there's no gap while
+  // the app works out what comes next.
 
   #useNatural() {
     return voice.prefs.engine === "natural" && voice.naturalState().status === "ready";
@@ -312,75 +313,268 @@ class Player {
     return c || { engine: "system" };
   }
 
+  /** Audio for one part, made in the background: { state: pending | ok | failed, audio } */
   #audioFor(i, k) {
     const part = this.sentences[i]?.parts[k];
     if (!part) return null;
     const v = this.#voiceFor(part);
+    if (v.engine !== "natural") return null;
     const key = `${i}.${k}|${v.id}|${voice.prefs.rate}`;
-    if (!this.cache.has(key)) {
-      const p = voice.synthNatural(speechText(part.text), v.id);
-      p.catch(() => {});
-      this.cache.set(key, p);
+    let e = this.cache.get(key);
+    if (!e) {
+      const text = speechText(part.text);
+      e = { state: "pending", voice: v.id };
+      if (!text.trim()) { e.state = "ok"; e.audio = { pcm: new Float32Array(480), rate: 24000 }; }
+      else {
+        e.promise = voice.synthNatural(text, v.id);
+        e.promise.then((a) => { e.state = "ok"; e.audio = a; }, () => { e.state = "failed"; });
+      }
+      this.cache.set(key, e);
     }
-    return this.cache.get(key);
-  }
-
-  #prefetch() {
-    if (!this.#useNatural()) return;
-    for (let j = this.i; j <= this.i + 3; j++) (this.sentences[j]?.parts || []).forEach((_, k) => this.#audioFor(j, k));
-    for (const key of this.cache.keys()) if (Number(key.split(".")[0]) < this.i) this.cache.delete(key);
+    return e;
   }
 
   #dropCache() {
-    voice.cancelNatural([...this.cache.values()]);
+    voice.cancelNatural([...this.cache.values()].map((e) => e.promise).filter(Boolean));
     this.cache.clear();
   }
 
-  async #speak(s, i, token) {
-    this.wordFrom = this.sentenceStart ?? 0;
-    for (let k = 0; k < s.parts.length; k++) {
-      if (token !== this.token) return;
-      const part = s.parts[k];
-      if (part.speaker !== this.speaker) { this.speaker = part.speaker; this.renderBar(); }
-      const words = this.#wordsFor(part);
-      const v = this.#voiceFor(part);
-      // a short record of who said what (shown in "Who's who" and used by tests)
-      (this.trail ||= []).push({ text: part.text, speaker: part.speaker?.name || null, voice: v.id || null });
-      if (this.trail.length > 60) this.trail.shift();
-      if (v.engine === "natural") {
-        try {
-          const audio = await this.#audioFor(i, k);
-          if (token !== this.token) return;
-          this.current = voice.playPcm(audio);
-          this.#trackWords(words, this.current, this.current.duration);
-          await this.current.done;
-          if (voice.naturalSpeed() > 1.25 && !this.warnedSlow) {
-            this.warnedSlow = true;
-            toast("The natural voice is slower than speech on this device, so there may be short gaps.", { action: "Use device voice", onAction: () => { voice.prefs.engine = "system"; }, duration: 9000 });
-          }
-          continue;
-        } catch { /* fall back to the device voice for this part */ }
+  /** Stop all sound and timers (audio already made is kept). */
+  #halt() {
+    this.token++;
+    this.wordToken++;
+    voice.stopAll();
+    cancelAnimationFrame(this.raf);
+    clearInterval(this.loopTimer);
+    this.clips = [];
+    this.sysQueue = [];
+    this.lastEnd = 0;
+    this.stopAtI = null;
+    this.switchPending = false;
+    this.waitNatural = false;
+    this.sysFails = 0;
+  }
+
+  /** Start reading from the beginning of sentence i. */
+  #begin(i) {
+    this.#halt();
+    this.i = clamp(i, 0, Math.max(0, this.sentences.length - 1));
+    this.next = { i: this.i, k: 0 };
+    this.cur = { i: -1, k: -1 };
+    this.state = "playing";
+    this.buffering = false;
+    this.engine = this.#useNatural() ? "natural" : "system";
+    this.#enterSentence(this.i);
+    this.renderBar();
+    if (this.engine === "natural") {
+      const token = this.token;
+      const frame = () => { if (token !== this.token) return; this.#tick(); this.raf = requestAnimationFrame(frame); };
+      this.raf = requestAnimationFrame(frame);
+      this.loopTimer = setInterval(() => { if (token === this.token) this.#tick(); }, 250); // keeps going with the screen off
+      this.#tick();
+    } else this.#sysFill();
+  }
+
+  #gapBefore(i) {
+    const prev = this.sentences[i - 1];
+    if (!prev || i === this.next0) return 0;
+    const g = prev.heading ? 0.6 : prev.paraEnd ? 0.3 : 0.05;
+    return g / (voice.prefs.rate || 1);
+  }
+
+  #moreText() {
+    const model = this.tab?.model;
+    if (this.extending || !model || this.nextPage > model.numPages) return;
+    this.extending = true;
+    this.#extend(this.sentences.length + 24).finally(() => { this.extending = false; });
+  }
+
+  get #textDone() { return !this.extending && this.nextPage > (this.tab?.model?.numPages || 0); }
+
+  #tick() {
+    if (this.state !== "playing" || !this.tab) return;
+    const now = voice.audioTime();
+    if (this.next.i >= this.sentences.length - 10) this.#moreText();
+    // make audio well ahead: about two minutes of reading, several sentences at a time
+    let chars = 0;
+    for (let j = this.cur.i >= 0 ? this.cur.i : this.i; j < this.sentences.length && chars < 2200; j++) {
+      const s = this.sentences[j];
+      s.parts.forEach((_, k) => this.#audioFor(j, k));
+      chars += s.text.length;
+    }
+    for (const [key] of this.cache) if (Number(key.split(".")[0]) < this.i - 3) this.cache.delete(key);
+    // lay ready clips on the timeline
+    const horizon = document.hidden ? 75 : 30;
+    while (!this.lastEnd || this.lastEnd - now < horizon) {
+      const { i, k } = this.next;
+      const s = this.sentences[i];
+      if (!s) break;
+      if (this.sleepChapter && k === 0 && s.heading && i > this.startI) { this.stopAtI = i; break; }
+      const e = this.#audioFor(i, k);
+      if (!e || e.state === "pending") break;
+      if (e.state === "ok") {
+        const gap = k === 0 ? this.#gapBefore(i) : 0.01;
+        const when = this.lastEnd ? Math.max(now + 0.03, this.lastEnd + gap) : now + 0.06;
+        const h = voice.schedulePcm(e.audio, when);
+        const part = s.parts[k];
+        this.clips.push({ i, k, start: h.start, end: h.end, starts: wordStarts(part.text, h.end - h.start) });
+        this.lastEnd = h.end;
+        (this.timeline ||= []).push({ i, k, start: h.start, end: h.end });
+        if (this.timeline.length > 80) this.timeline.shift();
+        (this.trail ||= []).push({ text: part.text, speaker: part.speaker?.name || null, voice: e.voice });
+        if (this.trail.length > 60) this.trail.shift();
       }
-      if (token !== this.token) return;
-      const sys = v.engine === "system" ? v : part.speaker ? this.cast.voiceFor(part.speaker, false) : {};
-      const text = speechText(part.text);
-      const spokenWords = (text.match(/\S+/g) || []).length || 1;
-      let heard = false;
-      this.current = voice.speakSystem(text, {
-        voiceId: sys.id, pitch: sys.pitch || 1,
-        onBoundary: (ci) => {
-          heard = true;
-          this.wordToken++;
-          const n = (text.slice(0, ci).match(/\S+/g) || []).length;
-          this.#markWord(words[Math.min(words.length - 1, Math.round((n * words.length) / spokenWords))]);
+      this.next = k + 1 < s.parts.length ? { i, k: k + 1 } : { i: i + 1, k: 0 };
+    }
+    // what's playing now
+    while (this.clips.length > 1 && this.clips[1].start <= now) this.clips.shift();
+    const clip = this.clips[0];
+    if (clip && now >= clip.start - 0.03 && now < clip.end) {
+      if (clip.i !== this.cur.i || clip.k !== this.cur.k) this.#enterPart(clip.i, clip.k);
+      this.#wordAt(clip, now - clip.start);
+      if (this.buffering) { this.buffering = false; this.renderBar(); }
+      return;
+    }
+    const upcoming = this.clips.find((c) => c.start > now);
+    if (upcoming || now < this.lastEnd) return; // a narrator's pause
+    if (this.stopAtI != null) {
+      this.i = this.stopAtI;
+      this.pause();
+      this.sleepChapter = false;
+      this.sleepLabel = "";
+      this.renderBar();
+      toast("Sleep timer — paused at the end of the chapter");
+      return;
+    }
+    if (this.next.i >= this.sentences.length && this.#textDone) { this.#finished(); return; }
+    // nothing ready yet: say so instead of going silent without explanation
+    if (!this.buffering) {
+      this.buffering = true;
+      this.waits = (this.waits || 0) + 1;
+      this.renderBar();
+      if (this.waits === 3) this.#suggestFaster();
+    }
+  }
+
+  async #suggestFaster() {
+    if (this.suggested || voice.naturalSpeed() < 0.75) return;
+    this.suggested = true;
+    if (voice.naturalMode() !== "fast" && (await voice.fastModeAvailable())) {
+      toast("The natural voice is working hard on this device. Use your graphics chip to make it faster?", {
+        action: "Make it faster", duration: 12000,
+        onAction: () => {
+          const at = this.i;
+          voice.setNaturalMode("fast").then(() => { if (this.active) this.#begin(at); }).catch(() => {});
+          toast(`Downloading the fast voice (${voice.MODE_SIZE("fast")}, one time)…`);
         },
       });
-      // some voices (online ones) don't report word timing — estimate it instead
-      const handle = this.current;
-      setTimeout(() => { if (!heard && handle === this.current && token === this.token) this.#trackWords(words, handle, text.length / (14.5 * (voice.prefs.rate || 1))); }, 450);
-      await this.current.done;
+    } else {
+      toast("This device makes the natural voice slowly, so it may pause now and then.", { action: "Use device voice", onAction: () => { voice.prefs.engine = "system"; if (this.active) this.#begin(this.i); }, duration: 10000 });
     }
-    this.wordToken++;
+  }
+
+  #enterSentence(i) {
+    const s = this.sentences[i];
+    if (!s) return;
+    const prevPage = this.sentences[this.i]?.page;
+    this.i = i;
+    this.showing = this.#show(s).then(() => { this.wordFrom = this.sentenceStart ?? 0; });
+    if (s.page !== prevPage) this.tab?.savePosition(s.page);
+  }
+
+  #enterPart(i, k) {
+    if (i !== this.cur.i) this.#enterSentence(i);
+    this.cur = { i, k };
+    const part = this.sentences[i]?.parts[k];
+    if ((part?.speaker || null) !== this.speaker || k === 0) { this.speaker = part?.speaker || null; this.renderBar(); }
+  }
+
+  #wordAt(clip, t) {
+    if (store.settings().wordHighlight === false) return;
+    if (!clip.words) {
+      if (clip.resolving) return;
+      clip.resolving = true;
+      this.showing?.then(() => { clip.words = this.#wordsFor(this.sentences[clip.i].parts[clip.k]); });
+      return;
+    }
+    let n = 0;
+    while (n + 1 < clip.starts.length && clip.starts[n + 1] <= t) n++;
+    if (n !== clip.word) { clip.word = n; this.#markWord(clip.words[n]); }
+  }
+
+  // device voice: always one sentence queued behind the one being spoken
+  #sysFill() {
+    const token = this.token;
+    while (this.sysQueue.length < 2) {
+      const { i, k } = this.next;
+      const s = this.sentences[i];
+      if (!s) {
+        if (!this.#textDone) { this.#moreText(); setTimeout(() => token === this.token && this.#sysFill(), 150); }
+        else if (!this.sysQueue.length) this.#finished();
+        return;
+      }
+      if (i >= this.sentences.length - 10) this.#moreText();
+      if (this.sleepChapter && k === 0 && s.heading && i > this.startI) {
+        if (!this.sysQueue.length) { this.i = i; this.pause(); this.sleepChapter = false; this.sleepLabel = ""; this.renderBar(); toast("Sleep timer — paused at the end of the chapter"); }
+        return;
+      }
+      this.next = k + 1 < s.parts.length ? { i, k: k + 1 } : { i: i + 1, k: 0 };
+      const part = s.parts[k];
+      const text = speechText(part.text);
+      if (!text.trim()) continue;
+      const sys = store.settings().characterVoices !== false && part.speaker ? this.cast.voiceFor(part.speaker, false) : {};
+      const item = { i, k, text };
+      const spokenWords = (text.match(/\S+/g) || []).length || 1;
+      item.h = voice.speakSystem(text, {
+        voiceId: sys.id, pitch: sys.pitch || 1,
+        onStart: () => {
+          if (token !== this.token) return;
+          item.started = true;
+          this.sysFails = 0;
+          this.#enterPart(i, k);
+          item.heard = false;
+          const tok = ++this.wordToken;
+          this.showing.then(() => {
+            if (tok !== this.wordToken) return;
+            item.words = store.settings().wordHighlight === false ? [] : this.#wordsFor(part);
+            // some voices (online ones) don't report word timing — estimate it instead
+            setTimeout(() => { if (!item.heard && tok === this.wordToken) this.#trackWords(item.words, item.h, text.length / (14.5 * (voice.prefs.rate || 1))); }, 350);
+          });
+        },
+        onBoundary: (ci) => {
+          if (token !== this.token || !item.words) return;
+          item.heard = true;
+          const n = (text.slice(0, ci).match(/\S+/g) || []).length;
+          this.#markWord(item.words[Math.min(item.words.length - 1, Math.round((n * item.words.length) / spokenWords))]);
+        },
+      });
+      (this.trail ||= []).push({ text: part.text, speaker: part.speaker?.name || null, voice: sys.id || null });
+      if (this.trail.length > 60) this.trail.shift();
+      item.h.done.then((spoke) => {
+        if (token !== this.token) return;
+        this.sysQueue = this.sysQueue.filter((x) => x !== item);
+        // the device voice refused to speak: stop rather than racing through the book
+        if (spoke === false && !item.started && ++this.sysFails >= 2) {
+          // the natural voice is on its way: wait for it rather than giving up
+          if (voice.prefs.engine === "natural" && voice.naturalState().status === "loading") {
+            const at = item.i;
+            this.#halt();
+            this.i = at;
+            this.waitNatural = true;
+            this.buffering = true;
+            this.renderBar();
+            return;
+          }
+          this.i = item.i;
+          this.pause();
+          toast("Your device's voice didn't start.", { action: "Use the natural voice", tone: "warn", duration: 10000, onAction: () => { voice.prefs.engine = "natural"; voice.loadNatural().then(() => this.resume()).catch((e) => toast(e.message, { tone: "warn" })); } });
+          return;
+        }
+        if (this.switchPending && this.#useNatural()) { this.#begin(this.sysQueue[0]?.i ?? this.next.i); return; }
+        this.#sysFill();
+      });
+      this.sysQueue.push(item);
+    }
   }
 
   #finished() {
@@ -392,7 +586,7 @@ class Player {
 
   // ───────── word by word ─────────
   #wordsFor(part) {
-    if (store.settings().wordHighlight === false) return [];
+    if (!part || store.settings().wordHighlight === false) return [];
     const tab = this.tab;
     const out = [];
     const re = /\S+/g;
@@ -420,14 +614,9 @@ class Player {
   }
 
   #trackWords(words, handle, duration) {
-    if (!words.length || !duration) return;
-    const weight = (w) => w.text.length + 2 + (/[,;:—–]["”’)]?$/.test(w.text) ? 4 : /[.!?…]["”’)]?$/.test(w.text) ? 6 : 0);
-    const total = words.reduce((n, w) => n + weight(w), 0);
-    const lead = Math.min(0.12, duration * 0.04), usable = Math.max(0.2, duration - lead - Math.min(0.2, duration * 0.06));
-    const starts = [];
-    let acc = 0;
-    for (const w of words) { starts.push(lead + (acc / total) * usable); acc += weight(w); }
-    const tok = ++this.wordToken;
+    if (!words?.length || !duration) return;
+    const starts = wordStarts(words.map((w) => w.text).join(" "), duration);
+    const tok = this.wordToken;
     let j = -1;
     const tick = () => {
       if (tok !== this.wordToken) return;
@@ -558,8 +747,10 @@ class Player {
     let line1 = note || (s ? `${s.heading ? "Heading" : "Page " + s.page} · ${who || vName}` : vName);
     let progress = null;
     if (voice.prefs.engine === "natural" && ns.status === "loading") {
-      line1 = `Downloading natural voice · ${Math.round(ns.progress * 100)}% (one time) — device voice until then`;
-      progress = ns.progress;
+      line1 = ns.downloaded ? "Starting the natural voice — device voice for a moment" : `Downloading natural voice · ${Math.round(ns.progress * 100)}% (one time) — device voice until then`;
+      progress = ns.downloaded ? null : ns.progress;
+    } else if (this.buffering && this.state === "playing") {
+      line1 = "Preparing the voice…";
     }
     const rate = voice.prefs.rate;
     setKids(this.bar,
@@ -569,7 +760,7 @@ class Player {
         el("button.pl-play", { "aria-label": this.state === "playing" ? "Pause" : "Play", onclick: () => this.toggle() }, icon(this.state === "playing" ? "pause" : "play", 22)),
         el("button.icon-btn.pl-skip", { "aria-label": "Next sentence", title: "Next sentence", onclick: () => this.skip(1) }, icon("skipFwd", 20))),
       el("div.pl-info", {},
-        el("p.pl-line1", {}, line1),
+        el("p.pl-line1" + (this.buffering && this.state === "playing" ? ".busy" : ""), {}, line1),
         el("p.pl-line2", {}, s ? s.text : "")),
       el("div.pl-side", {},
         el("button.pl-chip", { "aria-label": "Reading speed", title: "Reading speed", onclick: (e) => menu(e.currentTarget, RATES.map((r) => ({ label: `${r}×${r === 1 ? " (normal)" : ""}`, checked: r === rate, onClick: () => this.setRate(r) }))) }, `${rate}×`),
@@ -604,7 +795,7 @@ class Player {
       "-",
       { label: "Who's who (character voices)…", icon: "user", onClick: () => castDialog(this) },
       { label: "Pronunciations…", icon: "sound", onClick: () => pronunciationsDialog() },
-      { label: "Save this chapter as audio", icon: "download", onClick: () => exportChapterAudio(this.tab, this.sentences[this.i]?.page) },
+      { label: "Save as an audiobook…", icon: "download", onClick: () => audiobookDialog(this.tab) },
     ]);
   }
 }
@@ -706,14 +897,115 @@ function castDialog(p) {
   });
 }
 
-/** Save from here to the end of the chapter as an audio file (natural voice, made on this device). */
-export async function exportChapterAudio(tab, fromPage) {
+// ───────── audiobook files ─────────
+// Made on this device with the natural voice. Many parts are made at once (one
+// per voice worker), a small card in the corner shows progress while you keep
+// reading, and a whole book is saved as one file per chapter.
+
+const SPEAK_CPS = 15; // characters spoken per second at normal speed
+
+/** Ask what to save, with honest time estimates. */
+export async function audiobookDialog(tab) {
   if (!tab?.model) return;
-  if (voice.naturalState().status !== "ready") {
-    const ok = await confirmDialog("Save as audio", "Audio files are made with the natural voice, which downloads once (about 90 MB) and then works offline. Download it now?", { confirm: "Download the voice" });
-    if (!ok) return;
-    try { await voice.loadNatural(); } catch (e) { toast(e.message, { tone: "warn" }); return; }
+  const page = tab.currentPage();
+  const chapterChars = await charsUntilChapterEnd(tab.model, page);
+  const bookChars = (tab.model.numPages - page + 1) * (tab.model.avgChars || 1500);
+  const est = (chars) => {
+    const mins = chars / SPEAK_CPS / 60 / (voice.prefs.rate || 1);
+    const rtf = voice.naturalSpeed();
+    const listen = mins < 60 ? `${Math.max(1, Math.round(mins))} min` : `${(mins / 60).toFixed(1)} h`;
+    if (!rtf) return `${listen} of audio`;
+    const make = mins * rtf;
+    return `${listen} of audio · about ${make < 1 ? "a minute" : make < 60 ? Math.round(make) + " min" : (make / 60).toFixed(1) + " h"} to make`;
+  };
+  const fast = voice.naturalMode() !== "fast" && (await voice.fastModeAvailable());
+  return dialog({
+    title: "Save as an audiobook",
+    className: "audiobook-dialog",
+    body: (c, done) => {
+      const choice = (key, title, note) => el("button.voice-option", { onclick: () => done(key) }, el("span.vo-title", {}, title), el("span.vo-text", {}, note));
+      c.append(
+        choice("chapter", "This chapter, from where you are", est(chapterChars)),
+        choice("book", "The rest of the book — one file per chapter", est(bookChars) + (window.showDirectoryPicker ? " · saved straight into a folder you choose" : "")),
+        el("p.muted.small", {}, "Made on this device with the natural voice and your character voices, so nothing is uploaded. You can keep reading while it works."),
+        fast ? el("p.small", {}, el("button.link", { onclick: () => { voice.setNaturalMode("fast").catch(() => {}); toast(`Switching to the fast voice — one-time download (${voice.MODE_SIZE("fast")})`); done(null); } }, "Make it much faster with your graphics chip"), ` (one-time ${voice.MODE_SIZE("fast")} download)`) : null);
+    },
+  }).then((scope) => (scope === "book" ? exportBookAudio(tab, page) : scope === "chapter" ? exportChapterAudio(tab, page) : null));
+}
+
+async function charsUntilChapterEnd(model, page) {
+  let n = 0;
+  for (let p = page; p <= model.numPages && p < page + 80; p++) {
+    const blocks = await model.page(p);
+    if (p > page && blocks.some((b) => b.type === "h" && b.level === 2)) break;
+    n += blocks.reduce((a, b) => a + (b.text?.length || 0), 0);
   }
+  return n;
+}
+
+async function readyVoice() {
+  if (voice.naturalState().status === "ready") return true;
+  const ok = await confirmDialog("Save as audio", `Audio files are made with the natural voice, which downloads once (${voice.MODE_SIZE(voice.naturalMode())}) and then works offline. Download it now?`, { confirm: "Download the voice" });
+  if (!ok) return false;
+  try { await voice.loadNatural(); return true; } catch (e) { toast(e.message, { tone: "warn" }); return false; }
+}
+
+/** A small progress card in the corner — reading carries on underneath. */
+function taskCard(title) {
+  let cancelled = false;
+  const bar = el("div.pl-progress.static", { style: { "--p": 0 } });
+  const label = el("p.muted.small", {}, "Starting…");
+  const card = el("div.task-card", { role: "status" },
+    el("div.row", {}, icon("download", 16), el("strong.small", {}, title), el("span.spacer"),
+      el("button.icon-btn.sm", { "aria-label": "Cancel", title: "Cancel", onclick: () => { cancelled = true; card.remove(); toast("Audio file cancelled"); } }, icon("x", 16))),
+    bar, label);
+  document.body.append(card);
+  const t0 = performance.now();
+  return {
+    get cancelled() { return cancelled; },
+    progress(done, note = "") {
+      bar.style.setProperty("--p", done);
+      const elapsed = (performance.now() - t0) / 1000;
+      const left = done > 0.02 ? (elapsed / done) * (1 - done) : null;
+      label.textContent = `${Math.round(done * 100)}%` + (left != null ? ` · about ${left > 90 ? Math.round(left / 60) + " min" : Math.max(1, Math.round(left)) + " s"} left` : "") + (note ? ` · ${note}` : "");
+    },
+    close() { card.remove(); },
+  };
+}
+
+/** Make audio for a list of sentences, keeping every voice worker busy. Returns Float32 chunks. */
+async function renderAudio(list, cast, job, base = 0, total = list.length) {
+  const chunks = [];
+  let rate = 24000;
+  const want = (s) => s.parts.map((part) => {
+    const v = store.settings().characterVoices !== false && part.speaker ? cast.voiceFor(part.speaker, true) : { id: voice.prefs.natural };
+    const text = speechText(part.text);
+    const p = text.trim() ? voice.synthNatural(text, v.id) : Promise.resolve(null);
+    p.catch(() => {});
+    return p;
+  });
+  const AHEAD = 24; // sentences in flight
+  const inflight = [];
+  for (let i = 0; i < Math.min(AHEAD, list.length); i++) inflight.push(want(list[i]));
+  for (let i = 0; i < list.length; i++) {
+    if (job.cancelled) { voice.cancelNatural(inflight.flat()); return null; }
+    if (i + AHEAD < list.length) inflight.push(want(list[i + AHEAD]));
+    for (const p of inflight[i]) {
+      try { const a = await p; if (a) { rate = a.rate; chunks.push(a.pcm); } } catch { /* skip this bit */ }
+    }
+    inflight[i] = [];
+    const s = list[i];
+    chunks.push(new Float32Array(Math.round(rate * (s.heading ? 0.8 : s.paraEnd ? 0.45 : 0.1))));
+    job.progress((base + i + 1) / total);
+  }
+  return { chunks, rate };
+}
+
+const fileName = (title, part) => `${(title || "Book").slice(0, 60)} - ${String(part).slice(0, 60)}.wav`;
+
+/** Save from here to the end of the chapter as one audio file. */
+export async function exportChapterAudio(tab, fromPage) {
+  if (!tab?.model || !(await readyVoice())) return;
   const start = fromPage || tab.currentPage();
   const dctx = new DialogueContext();
   const cast = new Cast(tab.docId);
@@ -728,39 +1020,56 @@ export async function exportChapterAudio(tab, fromPage) {
   }
   if (!list.length) { toast("There's no text here to turn into audio."); return; }
   const chapter = (await tab.model.headingBefore(start)) || `from page ${start}`;
-  let cancelled = false;
-  let closeDialog;
-  const bar = el("div.pl-progress.static", { style: { "--p": 0 } });
-  const label = el("p.muted.small", {}, "Starting…");
-  dialog({
-    title: "Saving this chapter as audio",
-    body: (c, done) => { closeDialog = done; c.append(el("p", {}, `“${chapter}” — ${list.length} sentences. Made on this device, so it can take a few minutes. You can keep reading meanwhile.`), bar, label); },
-    actions: [{ label: "Cancel", onClick: () => { cancelled = true; } }],
-  }).then(() => { cancelled = true; });
-  const chunks = [];
-  let rate = 24000;
-  const t0 = performance.now();
-  for (let i = 0; i < list.length && !cancelled; i++) {
-    const s = list[i];
-    for (const part of s.parts) {
-      if (cancelled) break;
-      const v = store.settings().characterVoices !== false && part.speaker ? cast.voiceFor(part.speaker, true) : { id: voice.prefs.natural };
-      try {
-        const a = await voice.synthNatural(speechText(part.text), v.id);
-        rate = a.rate;
-        chunks.push(a.pcm);
-      } catch { /* skip this bit */ }
-    }
-    chunks.push(new Float32Array(Math.round(rate * (s.heading ? 0.8 : s.paraEnd ? 0.45 : 0.12))));
-    const done = (i + 1) / list.length;
-    bar.style.setProperty("--p", done);
-    const elapsed = (performance.now() - t0) / 1000;
-    const left = (elapsed / done) * (1 - done);
-    label.textContent = `${Math.round(done * 100)}% · about ${left > 90 ? Math.round(left / 60) + " min" : Math.max(1, Math.round(left)) + " s"} left`;
-  }
-  if (cancelled) return;
-  closeDialog?.();
-  const name = `${(tab.doc?.title || "Book").slice(0, 60)} — ${chapter.slice(0, 50)}.wav`.replace(/[\\/:*?"<>|]/g, "");
-  downloadBlob(voice.encodeWav(chunks, rate), name);
+  const job = taskCard(`Saving “${chapter.slice(0, 40)}” as audio`);
+  const out = await renderAudio(list, cast, job);
+  if (!out) return;
+  job.close();
+  downloadBlob(voice.encodeWav(out.chunks, out.rate), fileName(tab.doc?.title, chapter));
   toast("Audio saved — it plays in any music or podcast app");
+}
+
+/** Save the rest of the book, one file per chapter (into a folder where the browser allows). */
+export async function exportBookAudio(tab, fromPage = 1) {
+  if (!tab?.model || !(await readyVoice())) return;
+  let dir = null;
+  if (window.showDirectoryPicker) {
+    try { dir = await window.showDirectoryPicker({ id: "luma-audiobooks", mode: "readwrite" }); } catch { return; }
+  }
+  const model = tab.model;
+  const dctx = new DialogueContext();
+  const cast = new Cast(tab.docId);
+  const job = taskCard(`Saving “${(tab.doc?.title || "book").slice(0, 36)}” as an audiobook`);
+  const totalPages = model.numPages - fromPage + 1;
+  let n = 0, list = [], title = (await model.headingBefore(fromPage)) || "Opening";
+  const save = async () => {
+    if (!list.length) return true;
+    const out = await renderAudio(list, cast, { get cancelled() { return job.cancelled; }, progress: () => {} });
+    if (!out) return false;
+    n++;
+    const name = fileName(`${String(n).padStart(2, "0")} ${tab.doc?.title || "Book"}`, title);
+    const blob = voice.encodeWav(out.chunks, out.rate);
+    if (dir) {
+      const fh = await dir.getFileHandle(name.replace(/[\\/:*?"<>|]/g, "-"), { create: true });
+      const w = await fh.createWritable();
+      await w.write(blob);
+      await w.close();
+    } else downloadBlob(blob, name);
+    return true;
+  };
+  for (let p = fromPage; p <= model.numPages; p++) {
+    if (job.cancelled) return;
+    const blocks = await model.page(p);
+    for (const b of blocks) {
+      if (b.type === "h" && b.level === 2 && list.some((s) => !s.heading)) {
+        if (!(await save())) return;
+        list = [];
+        title = b.text;
+      }
+      appendSentences(list, [b], p, dctx);
+    }
+    job.progress((p - fromPage + 1) / totalPages, `chapter ${n + 1}`);
+  }
+  if (!(await save())) return;
+  job.close();
+  toast(dir ? `Saved ${n} chapter files to “${dir.name}”` : `Saved ${n} chapter files to your downloads`);
 }
