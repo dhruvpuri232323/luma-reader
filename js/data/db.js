@@ -21,9 +21,24 @@ function open() {
         if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: "id" });
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // A newer version of Luma opened in another window needs to upgrade the
+      // database: step aside so it isn't left waiting, and ask for a reload.
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+        window.dispatchEvent(new CustomEvent("luma-db-replaced"));
+      };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
-    req.onblocked = () => console.warn("IndexedDB upgrade blocked by another tab");
+    // An older copy of Luma is still open somewhere and holds the database.
+    // The upgrade continues by itself as soon as that window or tab is closed.
+    req.onblocked = () => {
+      console.warn("IndexedDB upgrade blocked by another tab");
+      window.dispatchEvent(new CustomEvent("luma-db-blocked"));
+    };
   });
   return dbPromise;
 }

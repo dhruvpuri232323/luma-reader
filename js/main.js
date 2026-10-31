@@ -53,6 +53,14 @@ async function boot() {
 
   bus.on("doc-finished", (id) => { cue("done"); toast(`Finished “${store.get("docs", id)?.title}”`); });
   bus.on("toast", (msg) => toast(msg, { duration: 4200 }));
+  // a newer version was opened in another window: this one has to reload
+  window.addEventListener("luma-db-replaced", () => {
+    if (document.querySelector(".app-replaced")) return;
+    document.body.append(el("div.app-replaced", { role: "alertdialog", "aria-label": "Luma Reader was updated" },
+      el("div.boot", {}, el("span.brand-mark"),
+        el("p.boot-note", {}, "Luma Reader was updated in another window. Reload to keep reading here — everything is saved."),
+        el("div.boot-actions", {}, el("button.primary", { onclick: () => location.reload() }, "Reload")))));
+  });
   bus.on("app-update", () => toast("A new version is ready.", { action: "Reload", onAction: () => location.reload(), duration: 15000 }));
   document.documentElement.classList.add("ready");
 }

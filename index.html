@@ -29,6 +29,47 @@
   </div>
   <input id="file-input" type="file" accept=".pdf,.epub,.txt,.md,.markdown,.html,.htm,application/pdf,application/epub+zip,text/plain,text/markdown,text/html" multiple hidden>
   <noscript><p style="padding:2rem">Luma Reader needs JavaScript to run.</p></noscript>
+  <script>
+    // If starting up stalls, say why and offer a way out instead of a silent logo.
+    (function () {
+      var root = document.documentElement;
+      function note(text, actions) {
+        var boot = document.querySelector(".boot");
+        if (!boot || root.classList.contains("ready")) return;
+        var p = boot.querySelector(".boot-note") || boot.appendChild(document.createElement("p"));
+        p.className = "boot-note";
+        p.textContent = text;
+        var old = boot.querySelector(".boot-actions");
+        if (old) old.remove();
+        if (!actions) return;
+        var row = boot.appendChild(document.createElement("div"));
+        row.className = "boot-actions";
+        var reload = row.appendChild(document.createElement("button"));
+        reload.className = "primary";
+        reload.textContent = "Reload";
+        reload.onclick = function () { location.reload(); };
+        var repair = row.appendChild(document.createElement("button"));
+        repair.textContent = "Repair app files";
+        repair.title = "Re-downloads the app. Your books, notes and words are kept.";
+        repair.onclick = async function () {
+          repair.disabled = true;
+          try {
+            var regs = (await navigator.serviceWorker?.getRegistrations?.()) || [];
+            await Promise.all(regs.map(function (r) { return r.unregister(); }));
+            var keys = (await window.caches?.keys?.()) || [];
+            await Promise.all(keys.filter(function (k) { return k.indexOf("luma-share") < 0; }).map(function (k) { return caches.delete(k); }));
+          } catch (e) {}
+          location.reload();
+        };
+      }
+      addEventListener("luma-db-blocked", function () {
+        note("Finishing an update… Close any other Luma Reader windows or browser tabs and it will carry on by itself.");
+      });
+      setTimeout(function () {
+        note("Luma Reader is taking longer than usual to start. If it's open in another window or tab, close that one. Otherwise, reload.", true);
+      }, 12000);
+    })();
+  </script>
   <script type="module" src="js/main.js"></script>
 </body>
 </html>

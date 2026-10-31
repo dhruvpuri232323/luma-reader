@@ -143,6 +143,12 @@ textarea.input { resize: vertical; line-height: 1.5; }
 .app { display: grid; grid-template-columns: var(--rail) 1fr; min-height: 100dvh; }
 .boot { grid-column: 1 / -1; display: grid; place-items: center; height: 100dvh; }
 .boot .brand-mark { width: 44px; height: 44px; animation: pulse 1.4s ease-in-out infinite; }
+.boot { align-content: center; gap: 18px; text-align: center; padding: 24px; }
+.boot-note { max-width: 420px; margin: 0; color: var(--ink-2); font: 15px/1.5 var(--ui, system-ui); }
+.boot-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.boot-actions button { height: 40px; padding: 0 18px; border-radius: 999px; font: 700 14px var(--ui, system-ui); border: 1px solid var(--line-2, #ccc); background: var(--surface, #fff); color: var(--ink, #222); cursor: pointer; }
+.boot-actions button.primary { background: var(--ink, #222); color: var(--bg, #fff); border-color: transparent; }
+.app-replaced { position: fixed; inset: 0; z-index: 2147483600; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(4px); }
 @keyframes pulse { 50% { opacity: .4; } }
 
 .brand-mark {
@@ -542,8 +548,8 @@ input[type="range"] { accent-color: var(--accent); }
 @keyframes shake { 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
 .pr-hear { justify-self: center; }
 .pr-mic { width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #fff; box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 20%, transparent); }
-.pr-mic.on { animation: pulse 1.2s infinite; }
-@keyframes pulse { 50% { box-shadow: 0 0 0 14px color-mix(in srgb, var(--accent) 8%, transparent); } }
+.pr-mic.on { animation: micpulse 1.2s infinite; }
+@keyframes micpulse { 50% { box-shadow: 0 0 0 14px color-mix(in srgb, var(--accent) 8%, transparent); } }
 .pr-sentence { font: 400 16px/1.5 var(--serif); text-align: left; }
 .pr-done { display: grid; gap: 8px; justify-items: center; padding-top: 30px; }
 .pr-big { font: 600 46px var(--serif); margin: 0; }
