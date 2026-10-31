@@ -1,4 +1,4 @@
-// Find the word under the pointer in the PDF text layer (or reflow text) and
+// Find the word under the pointer in the PDF text layer (or Book view text) and
 // show its definition: hover on laptops, single tap on phones and tablets.
 import { store } from "../data/store.js";
 import { showDefinition, hideDefinition, scheduleHide, cancelHide, definitionEl, isDefinitionOpen } from "../ui/definition.js";
@@ -22,7 +22,7 @@ export function wordAtPoint(x, y, scope) {
   const hit = caretAt(x, y);
   if (!hit || hit.node?.nodeType !== Node.TEXT_NODE) return null;
   const host = hit.node.parentElement;
-  if (!host || !host.closest(".textLayer, .reflow-text") || (scope && !scope.contains(host))) return null;
+  if (!host || !host.closest(".textLayer, .book-text") || (scope && !scope.contains(host))) return null;
   const text = hit.node.data;
   // caret offset may sit just after the word when pointing at its last letter
   let s = Math.min(hit.offset, text.length);
@@ -39,16 +39,32 @@ export function wordAtPoint(x, y, scope) {
   const rects = [...range.getClientRects()];
   const rect = rects.find((r) => x >= r.left - 2 && x <= r.right + 2 && y >= r.top - 3 && y <= r.bottom + 3);
   if (!rect) return null;
-  return { word, rect, node: hit.node, offset: s + lead };
+  return { word, rect, node: hit.node, offset: s + lead, phrase: properNounAround(text, s + lead, word) };
+}
+
+/** "Adam Smith", "New Delhi": a run of capitalised words around the hovered one. */
+function properNounAround(text, start, word) {
+  if (!/^\p{Lu}\p{Ll}/u.test(word)) return null;
+  const words = [];
+  const re = /[\p{L}'’.-]+/gu;
+  let m;
+  while ((m = re.exec(text))) words.push({ w: m[0].replace(/[.’']+$/, ""), s: m.index, e: m.index + m[0].length });
+  const i = words.findIndex((x) => x.s <= start && x.e > start);
+  if (i < 0) return null;
+  let a = i, b = i;
+  while (a > 0 && i - a < 3 && /^\p{Lu}/u.test(words[a - 1].w) && /^\s$/.test(text.slice(words[a - 1].e, words[a].s)) && !/[.!?:;]$/.test(text.slice(words[a - 1].s, words[a - 1].e))) a--;
+  while (b < words.length - 1 && b - a < 3 && /^\p{Lu}/u.test(words[b + 1].w) && /^\s$/.test(text.slice(words[b].e, words[b + 1].s))) b++;
+  if (a === b) return null;
+  return words.slice(a, b + 1).map((x) => x.w).join(" ");
 }
 
 /** About one sentence of text around the word, for the "where you met it" note. */
 export function contextAround(node, word) {
   const host = node.parentElement;
-  const layer = host.closest(".textLayer, .reflow-text");
+  const layer = host.closest(".textLayer, .book-text");
   let text = "";
-  if (host.closest(".reflow-text")) {
-    text = host.closest("p")?.textContent || host.textContent;
+  if (!layer || host.closest(".book-text")) {
+    text = host.closest(".bk-b")?.textContent || host.textContent;
   } else {
     const spans = [...layer.querySelectorAll("span:not(.markedContent)")].filter((s) => !s.querySelector("span"));
     const i = spans.indexOf(host);
@@ -86,9 +102,10 @@ export function attachLookup(container, getSource) {
   };
 
   const open = (hit, sticky) => {
+    if (!hit.node.isConnected) return; // the page changed while the pointer rested
     const src = getSource(hit.node) || {};
     showMarker(hit.rect);
-    showDefinition(hit.word, hit.rect, { ...src, context: contextAround(hit.node, hit.word) }, { sticky });
+    showDefinition(hit.word, hit.rect, { ...src, context: contextAround(hit.node, hit.word) }, { sticky, phrase: hit.phrase });
   };
 
   const selectionActive = () => {

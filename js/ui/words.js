@@ -7,6 +7,10 @@ import { toast, dialog, confirmDialog, menu, promptDialog } from "./overlay.js";
 import { playWord } from "./definition.js";
 import { cue } from "../core/feel.js";
 import { navigate } from "./router.js";
+import { practice, MODES, practiceLog, bump } from "./practice.js";
+import { downloadAnki } from "../data/exporters.js";
+import { booksWithWord } from "../data/fulltext.js";
+import { reminderDialog } from "../core/reminders.js";
 
 const ui = { query: "", filter: "all", open: null };
 let root;
@@ -19,7 +23,11 @@ export function mountWords(container) {
   render();
 }
 
-export function wordsShown() { render(); }
+export function wordsShown(query = {}) {
+  if (query.w) { ui.query = ""; ui.filter = "all"; ui.open = wordId(query.w); }
+  render();
+  if (query.w) requestAnimationFrame(() => root.querySelector(`.word[data-id="${CSS.escape(ui.open)}"]`)?.scrollIntoView({ block: "center" }));
+}
 
 const firstDef = (w) => w.customDef || w.meanings?.[0]?.defs?.[0]?.d || "No definition yet — add your own.";
 
@@ -44,11 +52,16 @@ function render() {
       el("div.view-title", {}, el("h1", {}, "Words"),
         el("p.muted", {}, all.length ? `${counts.learning} learning · ${counts.mastered} mastered` : "Words you save while reading collect here")),
       el("div.head-actions", {},
-        all.length ? el("button.btn", { onclick: exportCsv }, icon("download", 18), el("span", {}, "CSV")) : null,
+        all.length ? el("button.icon-btn", { "aria-label": "Export words", title: "Export (CSV, Anki)", onclick: (e) => menu(e.currentTarget, [
+          { label: "Spreadsheet (.csv)", icon: "file", onClick: exportCsv },
+          { label: "Anki flashcards (.txt)", icon: "cards", onClick: () => { downloadAnki(store.list("words")); toast("Exported — in Anki use File › Import"); } },
+        ]) }, icon("download", 19)) : null,
+        el("button.icon-btn", { "aria-label": "Daily reminder", title: "Daily review reminder", onclick: () => reminderDialog() }, icon("bell", 19)),
         el("button.btn", { onclick: addWordManually }, icon("plus", 18), el("span", {}, "Add word")),
-        all.length ? el("button.btn", { onclick: () => flashcards(list.length ? list : all, "browse") }, icon("cards", 18), el("span", {}, "Flashcards")) : null,
+        all.length ? el("button.btn", { onclick: (e) => practiceMenu(e.currentTarget, list.length ? list : all) }, icon("sparkle", 18), el("span", {}, "Practise")) : null,
         el("button.btn.primary", { onclick: () => flashcards(due, "review"), disabled: !due.length },
           icon("calendar", 18), el("span", {}, due.length ? `Review ${due.length} due` : "Nothing due")))),
+    all.length ? goalStrip(due.length) : null,
     all.length ? el("div.lib-tools", {},
       el("label.search-wrap", {}, icon("search", 18), el("input.input.search", {
         id: "words-search", type: "search", placeholder: "Search words, definitions, memory tricks", value: ui.query, "aria-label": "Search words",
@@ -62,6 +75,24 @@ function render() {
           el("p.muted", {}, "On a laptop, rest the pointer on a word. On a phone, tap it. Save the definition with one click and it lands here, with the page you found it on."),
           el("button.btn.primary", { onclick: () => navigate("#/library") }, icon("library", 18), el("span", {}, "Go to library"))));
   if (focused) { const s = $("#words-search", root); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
+}
+
+function goalStrip(dueCount) {
+  const log = practiceLog();
+  const goal = store.settings().dailyGoal || 10;
+  return el("div.goal-strip", {},
+    el("div.goal-ring", { style: { "--p": Math.min(1, log.count / goal) }, "aria-hidden": "true" }),
+    el("p", {}, el("strong", {}, `${log.count} of ${goal}`), " practised today",
+      log.streak > 1 ? el("span.muted", {}, ` · ${log.streak}-day streak`) : null,
+      dueCount ? el("span.muted", {}, ` · ${dueCount} due`) : null));
+}
+
+function practiceMenu(anchor, list) {
+  menu(anchor, [
+    { heading: "Practise your words" },
+    { label: "Flashcards", icon: "cards", onClick: () => flashcards(list, "browse") },
+    ...Object.entries(MODES).filter(([, m]) => !m.available || m.available()).map(([k, m]) => ({ label: `${m.label} — ${m.note.toLowerCase()}`, icon: m.icon, onClick: () => practice(k)?.then(() => render()) })),
+  ]);
 }
 
 function wordRow(w) {
@@ -103,12 +134,26 @@ function wordDetail(w, doc) {
       m.synonyms?.length ? el("p.def-rel", {}, el("span", {}, "Similar"), " ", m.synonyms.slice(0, 8).join(", ")) : null,
       m.antonyms?.length ? el("p.def-rel", {}, el("span", {}, "Opposite"), " ", m.antonyms.slice(0, 6).join(", ")) : null)),
     src?.context ? el("blockquote.quote", {}, src.context) : null,
+    w.sentences?.length ? el("div.def-mine", {}, el("strong", {}, "Your sentences"), w.sentences.slice(0, 3).map((x) => el("p", {}, x.text))) : null,
+    otherBooks(w),
     el("p.small.muted", {},
       doc ? el("button.link", { onclick: () => navigate(`#/read/${src.docId}/${src.page}`) }, `From “${doc.title}”, page ${src.page}`)
         : src?.title ? `From “${src.title}”, page ${src.page}` : "Added by hand",
       ` · saved ${relTime(w.createdAt)}`,
       w.srs?.reps ? ` · next review ${w.srs.due <= Date.now() ? "today" : new Date(w.srs.due).toLocaleDateString(undefined, { day: "numeric", month: "short" })}` : ""),
     el("div.row", {}, el("button.btn.sm", { onclick: () => editWord(w.id) }, icon("edit", 16), el("span", {}, "Edit"))));
+}
+
+/** Where else this word turns up in your library. */
+function otherBooks(w) {
+  const box = el("div.word-elsewhere");
+  booksWithWord(w.word, { exclude: w.source?.docId }).then((hits) => {
+    if (!hits.length || !box.isConnected) return;
+    box.append(el("strong.small", {}, "Also in your books"),
+      el("ul.item-list", {}, hits.slice(0, 4).map((h) => el("li.item", {}, el("button.item-main", { onclick: () => navigate(`#/read/${h.doc.id}/${h.page}`) },
+        el("span.item-page", {}, `p. ${h.page}`), el("span.item-text", {}, h.context), el("span.item-meta", {}, h.doc.title))))));
+  });
+  return box;
 }
 
 async function setStatus(w, status) {
@@ -195,7 +240,10 @@ function flashcards(words, mode) {
         progress.textContent = `${i + 1} of ${deck.length}`;
         cardEl.classList.toggle("flipped", flipped);
         setKids(cardEl, 
-          el("div.fc-face.front", {}, el("p.fc-word", {}, w.word), w.phonetic ? el("p.fc-phon", {}, w.phonetic) : null, el("p.muted.small", {}, "Tap or press Space to flip")),
+          cloze(w, mode)
+            ? el("div.fc-face.front", {}, el("p.fc-label.muted.small", {}, "Which word fits? From your reading"), el("p.fc-cloze", {}, cloze(w, mode)),
+                el("p.muted.small", {}, `${w.meanings?.[0]?.pos ? w.meanings[0].pos + " · " : ""}starts with “${w.word[0]}” · tap or press Space to reveal`))
+            : el("div.fc-face.front", {}, el("p.fc-word", {}, w.word), w.phonetic ? el("p.fc-phon", {}, w.phonetic) : null, el("p.muted.small", {}, "Tap or press Space to flip")),
           el("div.fc-face.back", {},
             el("p.fc-word.small", {}, w.word),
             el("p.fc-def", {}, firstDef(w)),
@@ -213,6 +261,7 @@ function flashcards(words, mode) {
             await store.patch("words", w.id, { srs, ...(srs.interval >= 21 ? { status: "mastered" } : {}) });
             if (g === 0) deck.push(w);
             reviewed++;
+            bump();
             i++; flipped = false; cue("flip"); draw();
           };
           const label = (g) => { const s = schedule(w.srs, g); return s.interval ? `${s.interval}d` : "10m"; };
@@ -240,6 +289,17 @@ function flashcards(words, mode) {
       setTimeout(() => cardEl.focus(), 50);
     },
   }).then(() => render());
+}
+
+/** The sentence the word came from, with the word blanked out — recall in context. */
+function cloze(w, mode) {
+  const ctx = w.source?.context;
+  if (mode !== "review" || !ctx || !w.word) return null;
+  const re = new RegExp(`\\b(${w.word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\w*)`, "i");
+  const m = ctx.match(re);
+  if (!m) return null;
+  const i = m.index;
+  return [ctx.slice(0, i), el("span.blank", {}, "\u2009".repeat(2) + "_".repeat(Math.max(5, m[0].length)) + "\u2009".repeat(2)), ctx.slice(i + m[0].length)];
 }
 
 function exportCsv() {

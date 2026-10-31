@@ -1,31 +1,39 @@
-// One open book: a PDF.js viewer (continuous scroll, text layer, find) plus an
-// optional reflowed-text view of the same book.
-import { el, debounce, clamp, bus, setKids } from "../core/util.js";
+// One open book: the original pages (PDF.js viewer) and, on demand, the same
+// book set as text (Book view). Remembers which view you used for each book.
+import { el, debounce, clamp, bus } from "../core/util.js";
 import { store } from "../data/store.js";
 import { recordPosition } from "../data/library.js";
-import { openPdf, pdfViewerLib, pageText, pageParagraphs, closePdf } from "./pdf.js";
+import { openPdf, pdfViewerLib, pageText, closePdf } from "./pdf.js";
+import { BookModel } from "./bookmodel.js";
+import { BookView } from "./bookview.js";
+import { TextBookModel } from "./textmodel.js";
+import { parseEpub } from "../data/importers.js";
 
 const zoomKey = (id) => `luma.zoom.${id}`;
 const rotKey = (id) => `luma.rot.${id}`;
+const modeKey = (id) => `luma.mode.${id}`;
 
 export class Tab {
   constructor(docId) {
     this.docId = docId;
     this.pdf = null;
     this.viewer = null;
-    this.mode = "pdf"; // pdf | reflow
+    this.model = null;
+    this.book = null;
+    this.mode = "pdf"; // pdf | book
     this.state = "idle"; // idle | loading | ready | missing | error
     this.textCache = new Map();
     this.el = el("div.tab-pane", { dataset: { doc: docId } });
     this.container = el("div.pdf-scroller", { tabindex: "0" }, el("div.pdfViewer"));
-    this.reflowEl = el("div.reflow", { tabindex: "0", hidden: true });
-    this.el.append(this.container, this.reflowEl);
-    this.savePosition = debounce((p) => recordPosition(this.docId, p), 900);
+    this.el.append(this.container);
+    this.savePosition = debounce((p, opts) => recordPosition(this.docId, p, opts), 900);
   }
 
   get doc() { return store.get("docs", this.docId); }
+  get kind() { return this.doc?.kind || "pdf"; }
+  get hasPages() { return this.kind === "pdf"; }
   get page() { return this.viewer?.currentPageNumber || 1; }
-  get pages() { return this.pdf?.numPages || this.doc?.pages || 0; }
+  get pages() { return this.pdf?.numPages || this.model?.numPages || this.doc?.pages || 0; }
 
   async load(startPage) {
     if (this.state === "loading" || this.state === "ready") return;
@@ -33,15 +41,16 @@ export class Tab {
     this.emit();
     const blob = await store.getFile(this.docId);
     if (!blob) { this.state = "missing"; this.emit(); return; }
+    if (this.kind !== "pdf") return this.#loadText(blob, startPage);
     try {
       const [lib, pdf] = await Promise.all([pdfViewerLib(), openPdf(blob)]);
       this.pdf = pdf;
+      this.model = new BookModel(pdf);
       const eventBus = new lib.EventBus();
-      const linkService = new lib.PDFLinkService({ eventBus, externalLinkTarget: 2 /* blank */ });
+      const linkService = new lib.PDFLinkService({ eventBus, externalLinkTarget: 2 });
       const findController = new lib.PDFFindController({ eventBus, linkService });
       this.eventBus = eventBus;
       this.linkService = linkService;
-      this.findController = findController;
       this.viewer = new lib.PDFViewer({
         container: this.container,
         eventBus,
@@ -57,30 +66,58 @@ export class Tab {
       linkService.setDocument(pdf, null);
       this.viewer.setDocument(pdf);
 
-      eventBus.on("pagesinit", () => {
+      const start = clamp(startPage || this.doc?.lastPage || 1, 1, pdf.numPages);
+      eventBus.on("pagesinit", async () => {
         const z = localStorage.getItem(zoomKey(this.docId));
         this.viewer.currentScaleValue = z || (matchMedia("(max-width: 760px)").matches ? "page-width" : "auto");
         const rot = Number(localStorage.getItem(rotKey(this.docId)) || 0);
         if (rot) this.viewer.pagesRotation = rot;
-        const page = clamp(startPage || this.doc?.lastPage || 1, 1, pdf.numPages);
-        if (page > 1) this.viewer.currentPageNumber = page;
+        if (start > 1) this.viewer.currentPageNumber = start;
         this.state = "ready";
         this.emit();
         bus.emit("tab-ready", this);
+        const wanted = this.doc?.view || localStorage.getItem(modeKey(this.docId)) || store.settings().defaultMode;
+        if (wanted === "book") this.setMode("book", { page: start, quiet: true });
       });
       eventBus.on("pagechanging", ({ pageNumber }) => {
-        this.savePosition(pageNumber);
+        if (this.mode !== "pdf") return;
+        this.savePosition(pageNumber, { end: this.pages > 1 && pageNumber >= this.pages && this.moved });
+        this.moved = true;
         bus.emit("tab-page", this);
       });
       eventBus.on("scalechanging", () => bus.emit("tab-scale", this));
       eventBus.on("rotationchanging", () => bus.emit("tab-rotation", this));
-      eventBus.on("textlayerrendered", ({ pageNumber }) => bus.emit("page-layer", { tab: this, pageNumber }));
+      eventBus.on("textlayerrendered", ({ pageNumber }) => bus.emit("page-layer", { tab: this, pageNumber, text: true }));
       eventBus.on("pagerendered", ({ pageNumber }) => bus.emit("page-layer", { tab: this, pageNumber }));
       eventBus.on("updatefindmatchescount", ({ matchesCount }) => bus.emit("find-count", { tab: this, ...matchesCount }));
-      eventBus.on("updatefindcontrolstate", (e) => bus.emit("find-state", { tab: this, ...e }));
 
       if (this.doc && this.doc.pages !== pdf.numPages) store.patch("docs", this.docId, { pages: pdf.numPages });
-      if (this.doc) store.patch("docs", this.docId, { openedAt: Date.now() });
+    } catch (e) {
+      console.error(e);
+      this.state = "error";
+      this.error = e?.message || String(e);
+      this.emit();
+    }
+  }
+
+  /** EPUB, article or text: Book view only. */
+  async #loadText(blob, startPage) {
+    try {
+      if (this.kind === "epub") {
+        const { blocks, toc } = await parseEpub(blob);
+        this.objectUrls = blocks.map((b) => b.src).filter((u) => u?.startsWith("blob:"));
+        this.model = new TextBookModel(blocks, { toc });
+      } else {
+        const data = JSON.parse(await blob.text());
+        this.model = new TextBookModel(data.blocks || []);
+      }
+      this.container.hidden = true;
+      this.state = "ready";
+      if (this.doc && this.doc.pages !== this.model.numPages) store.patch("docs", this.docId, { pages: this.model.numPages });
+      this.emit();
+      bus.emit("tab-ready", this);
+      const start = clamp(startPage || this.doc?.lastPage || 1, 1, this.model.numPages);
+      await this.setMode("book", { page: start, quiet: true });
     } catch (e) {
       console.error(e);
       this.state = "error";
@@ -93,35 +130,66 @@ export class Tab {
 
   /** Called when the pane becomes visible again after being hidden. */
   shown() {
-    if (this.viewer && this.state === "ready") {
-      const v = localStorage.getItem(zoomKey(this.docId));
-      if (v && isNaN(Number(v))) this.viewer.currentScaleValue = v;
-      this.viewer.update();
-    }
+    if (this.state !== "ready") return;
+    if (this.mode === "book") this.book?.activate();
+    else this.viewer?.update();
   }
+  hidden() {
+    this.book?.deactivate();
+  }
+
+  currentPage() { return this.mode === "book" && this.book?.chunk >= 0 ? this.book.page : this.page; }
 
   goTo(page) {
-    page = clamp(Math.round(page), 1, this.pages || 1);
-    if (this.mode === "reflow") {
-      this.reflowEl.querySelector(`[data-page="${page}"]`)?.scrollIntoView({ block: "start" });
-      this.savePosition(page);
-      this.reflowPage = page;
-      bus.emit("tab-page", this);
-      return;
-    }
+    page = clamp(Math.round(page) || 1, 1, this.pages || 1);
+    if (this.mode === "book") return this.book.goToPage(page);
     if (this.viewer) this.viewer.currentPageNumber = page;
   }
-  next() { this.mode === "reflow" ? this.goTo(this.currentPage() + 1) : this.viewer?.nextPage(); }
-  prev() { this.mode === "reflow" ? this.goTo(this.currentPage() - 1) : this.viewer?.previousPage(); }
-  currentPage() { return this.mode === "reflow" ? this.reflowPage || this.page : this.page; }
+  next() { return this.mode === "book" ? this.book.next() : this.viewer?.nextPage(); }
+  prev() { return this.mode === "book" ? this.book.prev() : this.viewer?.previousPage(); }
+
+  async setMode(mode, { page, quiet = false } = {}) {
+    if (mode === this.mode || this.state !== "ready") return true;
+    if (mode === "pdf" && !this.hasPages) { bus.emit("toast", "Page view shows a PDF's original layout — this book is text, so it opens in Book view."); return false; }
+    const from = page || this.currentPage();
+    if (mode === "book") {
+      if (!this.book) {
+        this.book = new BookView(this);
+        this.el.append(this.book.el);
+      }
+      this.mode = "book";
+      this.container.hidden = true;
+      this.book.el.hidden = false;
+      const ok = await this.book.open(from);
+      if (!ok) {
+        // scanned PDF: stay on the original pages
+        setTimeout(() => { if (this.mode === "book") this.setMode("pdf"); }, quiet ? 0 : 2600);
+        bus.emit("book-unavailable", this);
+      }
+    } else {
+      this.mode = "pdf";
+      this.book?.deactivate();
+      if (this.book) this.book.el.hidden = true;
+      this.container.hidden = false;
+      this.viewer?.update();
+      requestAnimationFrame(() => { if (this.viewer && this.viewer.currentPageNumber !== from) this.viewer.currentPageNumber = from; });
+    }
+    if (!quiet) {
+      localStorage.setItem(modeKey(this.docId), this.mode);
+      if (this.doc && this.doc.view !== this.mode) store.patch("docs", this.docId, { view: this.mode }); // follows you to your other devices
+    }
+    bus.emit("tab-mode", this);
+    return true;
+  }
 
   zoom(dir) {
-    if (!this.viewer) return;
+    if (!this.viewer || this.mode !== "pdf") return;
     if (dir > 0) this.viewer.increaseScale(); else this.viewer.decreaseScale();
     this.rememberZoom();
   }
   setZoom(value) {
     if (!this.viewer) return;
+    if (this.mode !== "pdf") this.setMode("pdf");
     if (typeof value === "number") this.viewer.currentScale = clamp(value, 0.25, 6);
     else this.viewer.currentScaleValue = value;
     this.rememberZoom();
@@ -132,8 +200,7 @@ export class Tab {
     this.rememberZoom();
   }
   rememberZoom() {
-    const v = this.viewer.currentScaleValue;
-    localStorage.setItem(zoomKey(this.docId), String(v));
+    localStorage.setItem(zoomKey(this.docId), String(this.viewer.currentScaleValue));
   }
   rotate() {
     if (!this.viewer) return;
@@ -142,106 +209,61 @@ export class Tab {
   }
   get rotation() { return this.viewer?.pagesRotation || 0; }
 
+  /** Page text for search: the original PDF text in Page view, the clean book text otherwise. */
   async text(page) {
-    if (!this.textCache.has(page)) this.textCache.set(page, pageText(this.pdf, page).catch(() => ""));
-    return this.textCache.get(page);
+    const key = `${this.mode === "book" || !this.pdf ? "b" : "p"}${page}`;
+    if (!this.textCache.has(key)) {
+      this.textCache.set(key, (this.mode === "book" || !this.pdf ? this.model.pageText(page) : pageText(this.pdf, page)).then((t) => t || "").catch(() => ""));
+    }
+    return this.textCache.get(key);
   }
 
   async outline() {
-    if (!this.pdf) return [];
+    if (!this.pdf) {
+      // build a nested list from the text book's table of contents
+      const root = [];
+      const stack = [{ depth: -1, items: root }];
+      for (const t of this.model?.toc || []) {
+        const node = { title: t.title, dest: t.page, items: [] };
+        while (stack.length > 1 && stack[stack.length - 1].depth >= t.depth) stack.pop();
+        stack[stack.length - 1].items.push(node);
+        stack.push({ depth: t.depth, items: node.items });
+      }
+      return root;
+    }
     try { return (await this.pdf.getOutline()) || []; } catch { return []; }
   }
 
   async goToDest(dest) {
+    if (typeof dest === "number" && !this.pdf) return this.book?.goToPage(dest);
     if (!this.linkService) return;
-    if (this.mode === "reflow") this.setMode("pdf");
+    if (this.mode === "book") {
+      try {
+        const explicit = typeof dest === "string" ? await this.pdf.getDestination(dest) : dest;
+        const ref = explicit?.[0];
+        const idx = typeof ref === "object" ? await this.pdf.getPageIndex(ref) : Number(ref);
+        if (Number.isFinite(idx)) return this.book.goToPage(idx + 1);
+      } catch { /* fall back to page view */ }
+      await this.setMode("pdf");
+    }
     await this.linkService.goToDestination(dest);
   }
 
   find(query, { again = false, previous = false, highlightAll = true } = {}) {
     if (!this.eventBus) return;
     this.eventBus.dispatch("find", {
-      source: this,
-      type: again ? "again" : "",
-      query,
-      caseSensitive: false,
-      entireWord: false,
-      highlightAll,
-      findPrevious: previous,
-      matchDiacritics: false,
+      source: this, type: again ? "again" : "", query, caseSensitive: false, entireWord: false,
+      highlightAll, findPrevious: previous, matchDiacritics: false,
     });
-  }
-  clearFind() {
-    this.eventBus?.dispatch("findbarclose", { source: this });
-  }
-
-  async setMode(mode) {
-    if (mode === this.mode) return;
-    const page = this.currentPage();
-    this.mode = mode;
-    this.container.hidden = mode !== "pdf";
-    this.reflowEl.hidden = mode !== "reflow";
-    if (mode === "reflow") {
-      await this.buildReflow(page);
-    } else {
-      this.viewer?.update();
-      requestAnimationFrame(() => { if (page !== this.page) this.goTo(page); });
-    }
-    bus.emit("tab-mode", this);
-  }
-
-  async buildReflow(startPage) {
-    if (this.reflowBuilt) { this.goTo(startPage); return; }
-    this.reflowBuilt = true;
-    const body = el("div.reflow-text");
-    const status = el("p.reflow-status.muted", {}, "Extracting text…");
-    setKids(this.reflowEl, status, body);
-    let chars = 0;
-    const sections = [];
-    for (let p = 1; p <= this.pdf.numPages; p++) {
-      const sec = el("section.reflow-page", { dataset: { page: p } }, el("div.reflow-pno", {}, `Page ${p}`));
-      body.append(sec);
-      sections.push(sec);
-    }
-    const fill = async (p) => {
-      const paras = (await pageParagraphs(this.pdf, p).catch(() => []))
-        .filter((t, i, all) => !((i === 0 || i === all.length - 1) && /^(page\s*)?[\divxlc]{1,5}$/i.test(t.trim())));
-      chars += paras.join("").length;
-      const sec = sections[p - 1];
-      if (!paras.length) sec.append(el("p.muted.small", {}, "No text on this page."));
-      else paras.forEach((t) => sec.append(el("p", {}, t)));
-    };
-    // Fill the pages around the reader first, then the rest in the background.
-    const order = [];
-    for (let d = 0; d < this.pdf.numPages; d++) {
-      const a = startPage + d, b = startPage - d;
-      if (a <= this.pdf.numPages) order.push(a);
-      if (d && b >= 1) order.push(b);
-    }
-    for (const p of order.slice(0, 3)) await fill(p);
-    sections[startPage - 1]?.scrollIntoView({ block: "start" });
-    this.reflowPage = startPage;
-    const io = new IntersectionObserver((entries) => {
-      const vis = entries.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
-      if (vis && this.mode === "reflow") {
-        const p = Number(vis.target.dataset.page);
-        if (p !== this.reflowPage) { this.reflowPage = p; this.savePosition(p); bus.emit("tab-page", this); }
-      }
-    }, { root: this.reflowEl, rootMargin: "0px 0px -70% 0px" });
-    sections.forEach((s) => io.observe(s));
-    for (const p of order.slice(3)) {
-      await fill(p);
-      if (p % 8 === 0) await new Promise((r) => setTimeout(r, 0));
-    }
-    status.textContent = chars < this.pdf.numPages * 25
-      ? "This PDF has little or no selectable text — it is probably scanned images. Reflow and the dictionary need real text; use page view instead."
-      : "";
-    status.hidden = !status.textContent;
   }
 
   destroy() {
+    this.book?.deactivate();
+    this.book?.destroy();
     try { this.viewer?.cleanup(); } catch {}
     closePdf(this.pdf);
+    (this.objectUrls || []).forEach((u) => URL.revokeObjectURL(u));
+    this.destroyed = true;
     this.el.remove();
   }
 }

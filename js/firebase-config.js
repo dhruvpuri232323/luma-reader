@@ -30,3 +30,13 @@ export const ENABLE_CLOUD_PDFS = false;
 
 // Firebase JavaScript SDK version loaded from Google's CDN.
 export const FIREBASE_SDK_VERSION = "12.19.0";
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Google Drive book sync (free, optional — see docs/SETUP.md, "Google Drive")
+//  Paste an OAuth "Web application" client ID from Google Cloud Console
+//  (APIs & Services → Credentials). Your Firebase project already has one called
+//  "Web client (auto created by Google Service)". Add your site's address to its
+//  "Authorized JavaScript origins" and enable the Google Drive API.
+//  Leave empty to hide the Drive option.
+// ─────────────────────────────────────────────────────────────────────────────
+export const GOOGLE_CLIENT_ID = "";

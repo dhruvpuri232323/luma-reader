@@ -82,6 +82,7 @@ export function menu(anchor, items, { align = "end" } = {}) {
   for (const it of items) {
     if (it === "-") { m.append(el("div.menu-sep")); continue; }
     if (!it) continue;
+    if (it.heading) { m.append(el("p.menu-head", {}, it.heading)); continue; }
     m.append(el("button.menu-item" + (it.danger ? ".danger" : ""), {
       role: "menuitem",
       onclick: (e) => { e.stopPropagation(); closeMenus(); it.onClick?.(); },

@@ -100,6 +100,22 @@ New books upload automatically when you're signed in; existing ones upload the n
 
 ---
 
+## Google Drive — books on every device, free (optional)
+
+The free alternative to Step 6. Book files (PDF, EPUB, articles) are kept in a **Luma Reader** folder in *your own* Google Drive, so a book added on your laptop opens on your phone by itself. Drive can also carry your notes, words and progress — so this works even if you skip Firebase entirely. Luma only gets the `drive.file` permission: it can see the files it puts there and nothing else in your Drive.
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) and pick your Firebase project at the top (or create a project if you skipped Firebase).
+2. **APIs & Services → Library** → search **Google Drive API** → **Enable**.
+3. **APIs & Services → OAuth consent screen**: if asked, choose **External**, fill in the app name and your email, and save. Under **Audience**, either **Publish app** or add your own Google address as a **test user**.
+4. **APIs & Services → Credentials**. If you use Firebase there is already a **Web client (auto created by Google Service)** — open it. Otherwise **Create credentials → OAuth client ID → Web application**.
+5. Under **Authorized JavaScript origins** add `https://<your-username>.github.io` (and `http://localhost:5173` if you run it locally). Save.
+6. Copy the **Client ID** (it ends in `.apps.googleusercontent.com`) into `GOOGLE_CLIENT_ID` in `js/firebase-config.js`, commit and push.
+7. In the app: **Settings → Google Drive → Connect Google Drive** on each device, with the same Google account.
+
+Google asks you to confirm about once an hour while the app is open (a quick window — no password if you're signed in to Google). If Google says the app isn't verified, choose *Advanced → Go to Luma Reader*: it's your own app.
+
+---
+
 ## Troubleshooting
 
 | What you see | Fix |
@@ -111,6 +127,10 @@ New books upload automatically when you're signed in; existing ones upload the n
 | Changes don't appear on the other device | Both devices must use the same Google account. Settings shows "Up to date" when everything has synced |
 | The site shows an old version | Reload once — the app picks up the new version on the next open |
 | Actions run fails at "Check JavaScript syntax" | A typo in `js/firebase-config.js` — check quotes and commas |
+| Google Drive says "redirect_uri_mismatch" or "origin not allowed" | Google Drive step 5: add your site address to Authorized JavaScript origins (it can take a few minutes to apply) |
+| Google Drive says "access blocked" / "app not verified" | Google Drive step 3: add yourself as a test user, or publish the app |
+| A web article won't load | Some sites block readers. Open the page and use the “Save to Luma” button (Settings → Reading) instead |
+| No daily reminder notification | Notifications with the app closed need an installed app on Chrome/Edge (Android or desktop). Elsewhere, use “Add a daily reminder to my calendar” in Words → 🔔 |
 
 ## Optional: deploy the rules from GitHub automatically
 

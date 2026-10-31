@@ -16,7 +16,7 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..600&family=Literata:ital,opsz,wght@0,7..72,400..600;1,7..72,400&family=Lexend:wght@300..500&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..600&family=Literata:ital,opsz,wght@0,7..72,400..600;1,7..72,400&family=Lexend:wght@300..500&family=EB+Garamond:ital,wght@0,400..600;1,400&display=swap">
 
   <link rel="stylesheet" href="vendor/pdfjs/web/pdf_viewer.css">
   <link rel="stylesheet" href="css/app.css">
@@ -27,7 +27,7 @@
   <div id="app" class="app">
     <div class="boot" aria-label="Loading Luma Reader"><span class="brand-mark"></span></div>
   </div>
-  <input id="file-input" type="file" accept="application/pdf,.pdf" multiple hidden>
+  <input id="file-input" type="file" accept=".pdf,.epub,.txt,.md,.markdown,.html,.htm,application/pdf,application/epub+zip,text/plain,text/markdown,text/html" multiple hidden>
   <noscript><p style="padding:2rem">Luma Reader needs JavaScript to run.</p></noscript>
   <script type="module" src="js/main.js"></script>
 </body>

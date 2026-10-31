@@ -58,9 +58,21 @@ export function hashHue(str) {
 export const escapeHtml = (s = "") =>
   String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
+/** A file name every browser and OS accepts (some ignore names with accents or dashes like “–”). */
+export function safeFileName(name = "file") {
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot).replace(/[^\w.]/g, "") : "";
+  let base = (dot > 0 ? name.slice(0, dot) : name)
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[–—]/g, "-").replace(/[‘’`]/g, "'").replace(/[“”"]/g, "")
+    .replace(/[\\/:*?<>|]+/g, "-").replace(/[^\x20-\x7e]/g, "").replace(/\s+/g, " ").trim();
+  if (!base.replace(/[-' .]/g, "")) base = "luma";
+  return base.slice(0, 120) + ext;
+}
+
 export function downloadBlob(blob, name) {
   const url = URL.createObjectURL(blob);
-  const a = el("a", { href: url, download: name });
+  const a = el("a", { href: url, download: safeFileName(name) });
   document.body.append(a);
   a.click();
   a.remove();

@@ -9,14 +9,21 @@ import { ACCENTS, cue } from "../core/feel.js";
 import { icon } from "./icons.js";
 import { toast, confirmDialog } from "./overlay.js";
 import { installState, promptInstall } from "../core/pwa.js";
+import { typographyControls } from "./typography.js";
+import * as voice from "../core/voice.js";
+import { drive } from "../sync/drive.js";
+import { pronunciationsDialog } from "../reader/player.js";
+import { reminderDialog } from "../core/reminders.js";
+import { bookmarkletDialog } from "./add.js";
 
 let root;
 
 export function mountSettings(container) {
   root = container;
   const rerender = debounce(() => root.closest(".view")?.classList.contains("active") && render(), 100);
-  ["account", "sync-status", "sync-pending", "install"].forEach((e) => bus.on(e, rerender));
+  ["account", "sync-status", "sync-pending", "install", "voice-state", "voice-prefs", "drive"].forEach((e) => bus.on(e, rerender));
   bus.on("change", ({ coll, source }) => coll === "settings" && source === "remote" && rerender());
+  voice.voicesReady().then(rerender);
 }
 export function settingsShown() { render(); }
 
@@ -43,12 +50,18 @@ function render() {
   setKids(root, 
     el("header.view-head", {}, el("div.view-title", {}, el("h1", {}, "Settings"), el("p.muted", {}, "Changes apply instantly and sync to your other devices"))),
     accountSection(),
-    section("Appearance", null,
-      row("Theme", null, seg("theme", [["light", "Light"], ["sepia", "Sepia"], ["dark", "Dark"], ["auto", "Match device"]])),
-      row("Accent", null, el("div.swatches", {}, Object.entries(ACCENTS).map(([k, a]) => el("button.swatch.lg" + (s.accent === k ? ".on" : ""), {
-        style: { "--c": a.hex }, "aria-label": a.name, title: a.name,
-        onclick: (e) => { store.setSettings({ accent: k }); e.currentTarget.parentElement.querySelectorAll(".swatch").forEach((b) => b.classList.toggle("on", b === e.currentTarget)); },
-      })))),
+    driveSection(),
+    section("Reading", "How books look in Book view. Changes show in the preview straight away.",
+      el("div.set-typo", {}, typographyControls({ preview: true })),
+      row("Open new PDFs in", "You can switch any PDF between Page and Book view from the reader's top bar. EPUBs and articles always open as a book.", seg("defaultMode", [["pdf", "Page view"], ["book", "Book view"]])),
+      toggle("recap", "“Where was I?” reminder", "When you come back to a book after a while, show the chapter, your last lines and latest note"),
+      row("Save articles from your browser", "A “Save to Luma” button for your bookmarks bar", el("button.btn.sm", { onclick: () => bookmarkletDialog() }, icon("globe", 16), el("span", {}, "Get the button")))),
+    voiceSection(),
+    section("Learning words", null,
+      toggle("markHard", "Underline unusual words while reading", "Book view marks words you may not know (set the level in the reader's Words panel)"),
+      row("Daily review", s.reviewReminder ? `Reminder at ${new Date(2000, 0, 1, s.reminderHour ?? 19).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · goal ${s.dailyGoal || 10} words` : `Goal ${s.dailyGoal || 10} words a day · reminders off`,
+        el("button.btn.sm", { onclick: () => reminderDialog() }, icon("bell", 16), el("span", {}, "Set up")))),
+    section("Comfort", null,
       toggle("reduceMotion", "Reduce motion", "Turns off transitions and card animations"),
       toggle("sounds", "Sound cues", "Soft tones when you save a word, bookmark or finish a book")),
     section("Dictionary", "Look words up without selecting or copying them.",
@@ -60,21 +73,15 @@ function render() {
             oninput: (e) => { out.textContent = `${e.target.value} ms`; }, onchange: (e) => store.setSettings({ hoverDelay: Number(e.target.value) }) }), out));
       })(),
       toggle("tapLookup", "Define on tap", "Phones and tablets: tap a word once"),
-      (() => {
-        const out = el("span.pop-val", {}, `${s.speechRate}×`);
-        return row("Read-aloud speed", null, el("div.range-wrap", {},
-          el("input", { type: "range", min: 0.6, max: 1.6, step: 0.1, value: s.speechRate, "aria-label": "Speech rate",
-            oninput: (e) => { out.textContent = `${e.target.value}×`; }, onchange: (e) => store.setSettings({ speechRate: Number(e.target.value) }) }), out));
-      })(),
       row("Offline definitions", "Every word you look up is kept on this device", el("button.btn.sm", { onclick: async () => {
         await idb.clear("defs"); toast("Definition cache cleared");
       } }, "Clear cache"))),
     installSection(),
     dataSection(),
     section("Keyboard shortcuts", null,
-      el("dl.keys", {}, [["← →", "Previous / next page"], ["Ctrl F", "Search in book"], ["B", "Bookmark page"], ["F", "Focus mode"], ["+ −", "Zoom"], ["Shift R", "Rotate pages"], ["Esc", "Close pop-ups"], ["Space", "Flip flashcard"]]
+      el("dl.keys", {}, [["← →", "Previous / next page"], ["Space", "Next page in Book view · flip a flashcard"], ["V", "Switch Page / Book view"], ["L", "Listen / stop"], ["A", "Auto-scroll at your reading speed"], ["R", "Reading ruler (Book view)"], ["Ctrl F", "Search in book"], ["B", "Bookmark page"], ["F", "Focus mode"], ["+ −", "Zoom (Page view)"], ["Shift R", "Rotate pages"], ["Esc", "Close pop-ups"]]
         .map(([k, d]) => [el("dt", {}, el("kbd", {}, k)), el("dd", {}, d)]))),
-    el("p.muted.small.about", {}, "Luma Reader · PDFs are read on your device with PDF.js · Definitions from the Free Dictionary API (dictionaryapi.dev)"));
+    el("p.muted.small.about", {}, "Luma Reader · free, no ads, no account needed · PDFs read on your device with PDF.js · natural voices by Kokoro, on your device · definitions from the Free Dictionary API, Wiktionary, WordNet (Datamuse) and Wikipedia · articles via Jina Reader"));
 }
 
 function accountSection() {
@@ -128,6 +135,68 @@ function accountSection() {
         } }, el("span.g-logo", { "aria-hidden": "true" }), el("span", {}, "Sign in with Google")))));
   }
   return section("Account & sync", null, ...rows);
+}
+
+function voiceSection() {
+  const ns = voice.naturalState();
+  const engine = voice.prefs.engine || "natural";
+  const rateOut = el("span.pop-val", {}, `${store.settings().speechRate}×`);
+  const naturalStatus = ns.status === "ready" ? "Ready on this device"
+    : ns.status === "loading" ? `Downloading… ${Math.round(ns.progress * 100)}%`
+    : ns.status === "error" ? ns.error
+    : ns.downloaded ? "Downloaded — loads when you press Listen" : "Downloads once (about 90 MB) the first time you use it";
+  const pick = (eng, id) => {
+    if (eng === "natural") { voice.prefs.natural = id; voice.prefs.engine = "natural"; }
+    else { voice.prefs.system = id; voice.prefs.engine = "system"; }
+    voice.preview({ engine: eng, id }).catch((e) => toast(e.message || "Couldn't play the sample", { tone: "warn" }));
+  };
+  const sys = voice.systemVoices();
+  const curSys = voice.currentSystemVoice()?.id;
+  const list = (items, eng, cur) => el("div.voice-list", {}, items.map((v) =>
+    el("button.voice-item" + (engine === eng && cur === v.id ? ".on" : ""), { onclick: () => pick(eng, v.id), title: "Choose and play a sample" },
+      icon("play", 14), el("span.vi-name", {}, v.name), el("span.vi-desc", {}, v.desc || v.lang || ""))));
+  return section("Listening", "Press the headphones in the reader (or L) and Luma reads the book to you like an audiobook — the current sentence lights up and the pages turn on their own.",
+    row("Natural voices", naturalStatus,
+      ns.status === "ready" || ns.status === "loading" ? el("span.muted.small", {}, ns.status === "ready" ? "On" : "")
+        : el("button.btn.sm.primary", { onclick: () => { voice.prefs.engine = "natural"; voice.loadNatural().catch((e) => toast(e.message, { tone: "warn" })); } }, icon("download", 16), el("span", {}, ns.status === "error" ? "Try again" : "Download now"))),
+    list(voice.NATURAL_VOICES, "natural", voice.prefs.natural),
+    row("Device voices", sys.length ? "Built into this device — instant, but more robotic. Natural-sounding ones are listed first." : "This browser has no built-in voices.", el("span")),
+    sys.length ? list(sys.slice(0, 8).map((v) => ({ id: v.id, name: v.name + (v.natural ? " · natural" : ""), desc: v.lang })), "system", curSys) : null,
+    row("Speed", null, el("div.range-wrap", {},
+      el("input", { type: "range", min: 0.7, max: 2, step: 0.05, value: store.settings().speechRate, "aria-label": "Reading speed",
+        oninput: (e) => { rateOut.textContent = `${Number(e.target.value).toFixed(2).replace(/0$/, "")}×`; },
+        onchange: (e) => store.setSettings({ speechRate: Number(e.target.value) }) }), rateOut)),
+    toggle("characterVoices", "Character voices", "In stories, each character speaks in their own voice; the narrator keeps yours"),
+    toggle("wordHighlight", "Highlight each word", "Follow along word by word as well as sentence by sentence"),
+    toggle("skipCitations", "Skip citations", "Don't read out references like (Smith, 2004) or [12]"),
+    toggle("skipCaptions", "Skip captions", "Don't read figure and table captions"),
+    row("Pronunciations", `${Object.keys(store.settings().pronunciations || {}).length || "No"} custom pronunciations`, el("button.btn.sm", { onclick: () => pronunciationsDialog().then(() => render()) }, icon("sound", 16), el("span", {}, "Edit"))));
+}
+
+function driveSection() {
+  if (!drive.configured) {
+    return section("Google Drive", null, el("div.callout", {}, icon("drive", 22), el("div", {},
+      el("strong", {}, "Keep your books in your own Google Drive — free"),
+      el("p", {}, "Add a Google client ID to js/firebase-config.js (docs/SETUP.md, “Google Drive”) and books you add on one device open on all the others. It can also sync your notes, words and progress without Firebase."))));
+  }
+  const st = drive.status;
+  if (!drive.enabled) {
+    return section("Google Drive", "Your book files — and, if you like, your notes, words and progress — kept in a “Luma Reader” folder in your own Google Drive. Free, private, and Luma can only see the files it puts there.",
+      el("div.callout", {}, icon("drive", 22), el("div", {},
+        el("strong", {}, "Sync books through Google Drive"),
+        el("p", {}, "Add a PDF or EPUB on your laptop and it's waiting on your phone."),
+        el("button.btn.primary", { onclick: (e) => { e.currentTarget.disabled = true; drive.connect().catch((err) => toast(err.message, { tone: "warn" })).finally(() => render()); } }, icon("drive", 18), el("span", {}, "Connect Google Drive")))));
+  }
+  const label = { syncing: "Syncing…", synced: `Up to date${drive.lastSync ? " · " + new Date(drive.lastSync).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}`, "needs-auth": "Tap Sync to reconnect to Google", error: drive.error || "Problem syncing", offline: "Offline" }[st] || st;
+  const opt = (key, on, labelText, hint) => el("label.set-row", {}, el("div.set-text", {}, el("span.set-label", {}, labelText), el("span.set-hint", {}, hint)),
+    el("span.switch", {}, el("input", { type: "checkbox", role: "switch", checked: on, onchange: (e) => drive.setOption(key, e.target.checked) }), el("span.knob")));
+  return section("Google Drive", null,
+    row(drive.email ? `Connected as ${drive.email}` : "Connected", null,
+      el("div.row", {}, el("span.sync-dot." + (st === "synced" ? "synced" : st === "syncing" ? "syncing" : st === "offline" ? "offline" : "error")), el("span.small", {}, label),
+        el("button.icon-btn", { "aria-label": "Sync now", title: "Sync now", onclick: () => drive.syncNow() }, icon("sync", 18)))),
+    opt("files", drive.syncFiles, "Book files", "PDFs, EPUBs and articles are kept in Drive and appear on your other devices"),
+    opt("data", drive.syncData, "Notes, words & progress", firebaseConfigured() ? "Also keep a copy in Drive (Firebase already syncs these)" : "Sync everything else through Drive too — no Firebase needed"),
+    row("Disconnect", "Files already in your Drive stay there", el("button.btn.sm", { onclick: async () => { if (await confirmDialog("Disconnect Google Drive?", "Luma stops syncing through Drive on this device. Your files stay in your Drive.", { confirm: "Disconnect" })) { drive.disconnect(); render(); } } }, "Disconnect")));
 }
 
 function friendlyAuthError(err) {

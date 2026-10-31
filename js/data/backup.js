@@ -44,6 +44,6 @@ export async function restoreBackup(file) {
 }
 
 export async function wipeDevice() {
-  for (const s of [...SYNCED, "files", "covers", "defs", "outbox", "kv"]) await idb.clear(s);
+  for (const s of [...SYNCED, "files", "covers", "defs", "outbox", "kv", "texts", "freq"]) await idb.clear(s);
   localStorage.clear();
 }

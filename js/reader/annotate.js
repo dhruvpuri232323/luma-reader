@@ -4,6 +4,7 @@
 import { el, uid, bus, setKids } from "../core/util.js";
 import { store } from "../data/store.js";
 import { cue } from "../core/feel.js";
+import { TextIndex, textLayerSpans } from "./textindex.js";
 
 export const COLORS = {
   sun: { name: "Yellow", hex: "#F7D148" },
@@ -75,6 +76,13 @@ export function renderPageHighlights(tab, pageNumber) {
   }
   setKids(layer, );
   const rot = tab.rotation;
+  // Highlights made in Book view carry only their text: find it on the page once.
+  for (const a of annotationsFor(tab.docId, pageNumber)) {
+    if ((!a.rects || !a.rects.length) && a.text && !located.has(a.id)) {
+      const rects = locateRects(tab, pageNumber, a.text);
+      if (rects?.length) { located.add(a.id); store.patch("annotations", a.id, { rects }); }
+    }
+  }
   for (const a of annotationsFor(tab.docId, pageNumber)) {
     for (const r0 of a.rects || []) {
       const r = toDisplay(r0, rot);
@@ -145,6 +153,35 @@ function mergeRects(rects) {
     out.push({ ...r });
   }
   return out;
+}
+
+const located = new Set();
+
+/** Normalized page rects for a piece of text on a rendered PDF page, or null. */
+export function locateRects(tab, pageNumber, text) {
+  const div = tab.viewer?.getPageView(pageNumber - 1)?.div;
+  const layer = div?.querySelector(".textLayer");
+  if (!layer || !layer.querySelector("span")) return null;
+  const r = new TextIndex(textLayerSpans(layer)).rangeOf(text);
+  if (!r) return null;
+  const b = div.getBoundingClientRect();
+  const rects = [...r.getClientRects()].filter((cr) => cr.width > 1 && cr.height > 1)
+    .map((cr) => ({ x: (cr.left - b.left) / b.width, y: (cr.top - b.top) / b.height, w: cr.width / b.width, h: cr.height / b.height }));
+  if (!rects.length) return null;
+  return mergeRects(rects).map((x) => round(fromDisplay(x, tab.rotation)));
+}
+
+/** Highlight made in Book view: anchored by its text and page. */
+export async function createTextHighlight(tab, range, { color = "sun", note = "" } = {}) {
+  const text = range.toString().replace(/\s+/g, " ").trim();
+  const startEl = (range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement).closest(".bk-b");
+  const page = Number(startEl?.dataset.page) || tab.currentPage();
+  if (!text) return null;
+  const rec = await store.put("annotations", {
+    id: uid("a"), docId: tab.docId, docTitle: tab.doc?.title || "", page, color, text, note, rects: [], createdAt: Date.now(),
+  });
+  cue("save");
+  return rec;
 }
 
 export async function createHighlight(tab, range, { color = "sun", note = "" } = {}) {

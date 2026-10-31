@@ -39,7 +39,7 @@ export function registerServiceWorker() {
 }
 
 /** Files handed to us by the OS ("Open with") or by the share sheet. */
-export async function incomingFiles(onFiles) {
+export async function incomingFiles(onFiles, onShared) {
   if ("launchQueue" in window) {
     window.launchQueue.setConsumer(async (params) => {
       if (!params.files?.length) return;
@@ -55,10 +55,14 @@ export async function incomingFiles(onFiles) {
       const files = [];
       for (const req of keys) {
         const res = await cache.match(req);
+        await cache.delete(req);
+        if (res.headers.get("x-kind") === "link") {
+          try { onShared?.(await res.json()); } catch {}
+          continue;
+        }
         const blob = await res.blob();
         const name = decodeURIComponent(res.headers.get("x-filename") || "shared.pdf");
-        files.push(new File([blob], name, { type: "application/pdf" }));
-        await cache.delete(req);
+        files.push(new File([blob], name, { type: res.headers.get("content-type") || blob.type }));
       }
       if (files.length) onFiles(files);
     } catch (e) { console.warn("Share target:", e); }

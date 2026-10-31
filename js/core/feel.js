@@ -11,11 +11,13 @@ export const ACCENTS = {
 };
 
 export const REFLOW_FONTS = {
-  newsreader: { name: "Newsreader", stack: '"Newsreader", Georgia, serif' },
-  literata: { name: "Literata", stack: '"Literata", "Iowan Old Style", Georgia, serif' },
-  atkinson: { name: "Atkinson Hyperlegible", stack: '"Atkinson Hyperlegible", system-ui, sans-serif' },
-  lexend: { name: "Lexend", stack: '"Lexend", system-ui, sans-serif' },
-  system: { name: "Device font", stack: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' },
+  literata: { name: "Literata", note: "Made for long reading on screens", stack: '"Literata", "Iowan Old Style", Georgia, serif' },
+  garamond: { name: "EB Garamond", note: "Classic printed-book feel", stack: '"EB Garamond", Garamond, "Times New Roman", serif' },
+  newsreader: { name: "Newsreader", note: "Crisp and editorial", stack: '"Newsreader", Georgia, serif' },
+  atkinson: { name: "Atkinson Hyperlegible", note: "Easiest letters to tell apart", stack: '"Atkinson Hyperlegible", system-ui, sans-serif' },
+  lexend: { name: "Lexend", note: "Calm, open sans-serif", stack: '"Lexend", system-ui, sans-serif' },
+  dyslexic: { name: "OpenDyslexic", note: "Weighted letters that don't flip or swap", stack: '"OpenDyslexic", "Atkinson Hyperlegible", sans-serif' },
+  system: { name: "Device font", note: "Your phone or laptop's own font", stack: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' },
 };
 
 const darkQuery = matchMedia("(prefers-color-scheme: dark)");
@@ -32,12 +34,16 @@ export function applyAppearance() {
   root.dataset.theme = theme;
   root.dataset.accent = s.accent;
   root.dataset.motion = s.reduceMotion || motionQuery.matches ? "reduce" : "full";
+  const h = new Date().getHours();
+  root.dataset.warm = s.warm === "on" || (s.warm === "night" && (h >= 20 || h < 7)) ? "1" : "";
+  root.style.setProperty("--warmth", String(s.warmth ?? 0.35));
   const bg = getComputedStyle(root).getPropertyValue("--bg").trim();
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", bg || "#F5F6F8");
   bus.emit("appearance", theme);
 }
 
 darkQuery.addEventListener("change", applyAppearance);
+setInterval(() => { if (store.settings().warm === "night") applyAppearance(); }, 5 * 60 * 1000);
 motionQuery.addEventListener("change", applyAppearance);
 bus.on("settings", applyAppearance);
 bus.on("change", ({ coll, source }) => { if (coll === "settings" && source === "remote") applyAppearance(); });

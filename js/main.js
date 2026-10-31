@@ -9,10 +9,13 @@ import { icon } from "./ui/icons.js";
 import { toast } from "./ui/overlay.js";
 import { onRoute, route, navigate } from "./ui/router.js";
 import { mountLibrary, runImport } from "./ui/library.js";
+import { listenForClips, importShared } from "./ui/add.js";
+import { startReminders } from "./core/reminders.js";
+import { drive } from "./sync/drive.js";
 import { mountWords, wordsShown } from "./ui/words.js";
 import { mountNotes, notesShown } from "./ui/notes.js";
 import { mountSettings, settingsShown } from "./ui/settings.js";
-import { mountReader, openDoc, restoreSession, hasTabs, lastActive, applyReflowStyle, afterShow, restoreCompare } from "./reader/reader.js";
+import { mountReader, openDoc, restoreSession, hasTabs, lastActive, afterShow, restoreCompare } from "./reader/reader.js";
 
 const NAV = [
   ["library", "Library", "library"],
@@ -25,7 +28,6 @@ const NAV = [
 async function boot() {
   await store.init();
   applyAppearance();
-  applyReflowStyle();
   buildShell();
 
   mountLibrary($("#view-library"));
@@ -41,12 +43,16 @@ async function boot() {
   restoreCompare();
 
   wireDropZone();
-  incomingFiles((files) => runImport(files, { openAfter: true }));
+  incomingFiles((files) => runImport(files, { openAfter: true }), (shared) => importShared(shared));
+  listenForClips();
   registerServiceWorker();
   requestPersistence();
   sync.init();
+  drive.init();
+  startReminders();
 
   bus.on("doc-finished", (id) => { cue("done"); toast(`Finished “${store.get("docs", id)?.title}”`); });
+  bus.on("toast", (msg) => toast(msg, { duration: 4200 }));
   bus.on("app-update", () => toast("A new version is ready.", { action: "Reload", onAction: () => location.reload(), duration: 15000 }));
   document.documentElement.classList.add("ready");
 }
@@ -66,7 +72,7 @@ function buildShell() {
       el("section.view#view-notes", { "aria-label": "Notes" }),
       el("section.view#view-settings", { "aria-label": "Settings" })),
     el("nav.bottom-nav", { "aria-label": "Main" }, NAV.map(navBtn)),
-    el("div.dropzone", { "aria-hidden": "true" }, el("div", {}, icon("upload", 40), el("p", {}, "Drop PDFs to add them to your library"))));
+    el("div.dropzone", { "aria-hidden": "true" }, el("div", {}, icon("upload", 40), el("p", {}, "Drop PDFs, EPUBs or text files to add them"))));
   renderSyncChip();
   ["sync-status", "account", "sync-pending"].forEach((e) => bus.on(e, renderSyncChip));
 }
@@ -86,7 +92,7 @@ function renderSyncChip() {
 }
 
 let currentView = null;
-async function show({ view, args }) {
+async function show({ view, args, query }) {
   if (view === "read") {
     const id = args[0] || lastActive();
     if (!id) { navigate("#/library", { replace: true }); return; }
@@ -97,7 +103,7 @@ async function show({ view, args }) {
   }
   if (!["library", "words", "notes", "settings"].includes(view)) { navigate("#/library", { replace: true }); return; }
   setView(view);
-  ({ words: wordsShown, notes: notesShown, settings: settingsShown })[view]?.();
+  ({ words: wordsShown, notes: notesShown, settings: settingsShown })[view]?.(query);
 }
 
 function setView(name) {

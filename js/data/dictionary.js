@@ -16,20 +16,19 @@ export function normalizeWord(raw = "") {
     .toLowerCase();
 }
 
-/** Plausible base forms to try when the exact form isn't in the dictionary. */
+/** Base forms for plain inflections only (plural, past, -ing, -ly) — never
+ * meaning-changing suffixes like -er or -ness. */
 function candidates(w) {
   const out = [w];
-  const add = (x) => x && x.length > 1 && !out.includes(x) && out.push(x);
+  const add = (x) => x && x.length > 2 && !out.includes(x) && out.push(x);
   if (w.endsWith("ies")) add(w.slice(0, -3) + "y");
-  if (w.endsWith("es")) add(w.slice(0, -2));
-  if (w.endsWith("s") && !w.endsWith("ss")) add(w.slice(0, -1));
+  if (/(s|x|z|ch|sh)es$/.test(w)) add(w.slice(0, -2));
+  if (w.endsWith("s") && !/(ss|us|is)$/.test(w)) add(w.slice(0, -1));
   if (w.endsWith("ied")) add(w.slice(0, -3) + "y");
-  if (w.endsWith("ed")) { add(w.slice(0, -2)); add(w.slice(0, -1)); if (/(.)\1ed$/.test(w)) add(w.slice(0, -3)); }
-  if (w.endsWith("ing")) { add(w.slice(0, -3)); add(w.slice(0, -3) + "e"); if (/(.)\1ing$/.test(w)) add(w.slice(0, -4)); }
-  if (w.endsWith("ly")) { add(w.slice(0, -2)); if (w.endsWith("ily")) add(w.slice(0, -3) + "y"); }
-  if (w.endsWith("er")) add(w.slice(0, -2));
-  if (w.endsWith("est")) add(w.slice(0, -3));
-  if (w.endsWith("ness")) add(w.slice(0, -4));
+  if (w.endsWith("ed")) { add(w.slice(0, -1)); add(w.slice(0, -2)); if (/(.)\1ed$/.test(w)) add(w.slice(0, -3)); }
+  if (w.endsWith("ing")) { add(w.slice(0, -3) + "e"); add(w.slice(0, -3)); if (/(.)\1ing$/.test(w)) add(w.slice(0, -4)); }
+  if (w.endsWith("ily")) add(w.slice(0, -3) + "y");
+  else if (w.endsWith("ly")) add(w.slice(0, -2));
   return out;
 }
 
@@ -59,39 +58,125 @@ function shape(entries, asked) {
   return { word: first.word || asked, asked, phonetic, audio, meanings, fetchedAt: Date.now() };
 }
 
+const WIKTIONARY = "https://en.wiktionary.org/api/rest_v1/page/definition/";
+const WIKIPEDIA = "https://en.wikipedia.org/api/rest_v1/page/summary/";
+const DATAMUSE = "https://api.datamuse.com/";
+
+const stripHtml = (html = "") => {
+  const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
+  return (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+};
+
+async function getJson(url) {
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+async function freeDictionary(w, { stems = true } = {}) {
+  for (const c of stems ? candidates(w).slice(1) : [w]) {
+    const res = await fetch(API + encodeURIComponent(c));
+    if (res.status === 404) continue;
+    if (!res.ok) throw new Error("dictionary " + res.status);
+    return { ...shape(await res.json(), w), source: "dictionary" };
+  }
+  return null;
+}
+
+async function wiktionary(w, raw) {
+  for (const t of [...new Set([w, raw])]) {
+    if (!t) continue;
+    const data = await getJson(WIKTIONARY + encodeURIComponent(t) + "?redirect=true").catch(() => null);
+    const en = data?.en || Object.values(data || {}).flat().filter((x) => x?.language === "English");
+    if (!en?.length) continue;
+    const meanings = en.map((sec) => ({
+      pos: String(sec.partOfSpeech || "").toLowerCase(),
+      defs: (sec.definitions || []).map((d) => ({ d: stripHtml(d.definition), ex: stripHtml(d.examples?.[0] || d.parsedExamples?.[0]?.example || "") }))
+        .filter((d) => d.d && !/^(plural|alternative|obsolete) (form|spelling) of\b/i.test(d.d) || false).slice(0, 4),
+      synonyms: [], antonyms: [],
+    })).filter((m) => m.defs.length);
+    // If only "plural of X"-style entries exist, keep them rather than nothing.
+    const fallback = en.map((sec) => ({ pos: String(sec.partOfSpeech || "").toLowerCase(), defs: (sec.definitions || []).map((d) => ({ d: stripHtml(d.definition), ex: "" })).filter((d) => d.d).slice(0, 3), synonyms: [], antonyms: [] })).filter((m) => m.defs.length);
+    const list = meanings.length ? meanings : fallback;
+    if (list.length) return { word: t, asked: w, phonetic: "", audio: "", meanings: list.slice(0, 4), source: "wiktionary", sourceUrl: `https://en.wiktionary.org/wiki/${encodeURIComponent(t)}`, fetchedAt: Date.now() };
+  }
+  return null;
+}
+
+async function wikipedia(title) {
+  if (!title) return null;
+  const d = await getJson(WIKIPEDIA + encodeURIComponent(title.trim().replace(/ /g, "_")) + "?redirect=true").catch(() => null);
+  if (!d || d.type === "disambiguation" || !d.extract) return null;
+  return {
+    word: d.title, asked: title, phonetic: "", audio: "",
+    meanings: [{ pos: d.description || "encyclopedia", defs: [{ d: d.extract, ex: "" }], synonyms: [], antonyms: [] }],
+    source: "wikipedia", sourceUrl: d.content_urls?.desktop?.page || `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`,
+    thumb: d.thumbnail?.source || "", fetchedAt: Date.now(),
+  };
+}
+
+async function wordnet(w) {
+  const rows = await getJson(`${DATAMUSE}words?sp=${encodeURIComponent(w)}&md=dp&max=1`).catch(() => null);
+  const row = rows?.[0];
+  if (!row || row.word.toLowerCase() !== w || !row.defs?.length) return null;
+  const POS = { n: "noun", v: "verb", adj: "adjective", adv: "adverb", u: "" };
+  const by = new Map();
+  for (const line of row.defs) {
+    const [code, def] = line.split("\t");
+    const pos = POS[code] ?? code;
+    if (!by.has(pos)) by.set(pos, { pos, defs: [], synonyms: [], antonyms: [] });
+    if (by.get(pos).defs.length < 4) by.get(pos).defs.push({ d: def, ex: "" });
+  }
+  return { word: w, asked: w, phonetic: "", audio: "", meanings: [...by.values()], source: "wordnet", sourceUrl: "", fetchedAt: Date.now() };
+}
+
+export async function suggestions(w) {
+  const rows = await getJson(`${DATAMUSE}sug?s=${encodeURIComponent(w)}&max=6`).catch(() => null);
+  return (rows || []).map((r) => r.word).filter((x) => x && x.toLowerCase() !== w).slice(0, 5);
+}
+
+export const googleUrl = (word) => `https://www.google.com/search?q=${encodeURIComponent(`${word} meaning`)}`;
+
 /**
- * Look up a word. Returns { status: "ok", entry } | { status: "missing" } |
- * { status: "offline" } | { status: "error" }.
+ * Look up a word (or a name like "Adam Smith"). Tries, in order: the
+ * dictionary, Wiktionary, WordNet and Wikipedia. Returns
+ * { status: "ok", entry } | { status: "missing", suggestions } | { status: "offline" } | { status: "error" }.
  */
-export async function lookup(raw) {
+export async function lookup(raw, { phrase } = {}) {
   const w = normalizeWord(raw);
-  if (!w) return { status: "missing" };
-  const cached = await idb.get("defs", w);
+  if (!w) return { status: "missing", suggestions: [] };
+  const key = phrase ? "~" + phrase.toLowerCase() : w;
+  const cached = await idb.get("defs", key);
   if (cached?.entry) return { status: "ok", entry: cached.entry, cached: true };
-  if (cached?.missing && Date.now() - cached.at < 7 * 864e5) return { status: "missing" };
-  if (inflight.has(w)) return inflight.get(w);
+  if (cached?.missing && Date.now() - cached.at < 3 * 864e5) return { status: "missing", suggestions: cached.suggestions || [] };
+  if (inflight.has(key)) return inflight.get(key);
 
   const p = (async () => {
     if (!navigator.onLine) return { status: "offline" };
     try {
-      for (const c of candidates(w)) {
-        const res = await fetch(API + encodeURIComponent(c));
-        if (res.status === 404) continue;
-        if (!res.ok) return { status: "error" };
-        const entry = shape(await res.json(), w);
-        await idb.put("defs", { id: w, entry });
-        if (c !== w) await idb.put("defs", { id: c, entry });
+      let entry = null;
+      if (phrase) entry = await wikipedia(phrase);
+      const capitalised = /^\p{Lu}\p{Ll}/u.test(String(raw).trim());
+      if (!entry) entry = await freeDictionary(w, { stems: false }).catch(() => null);
+      if (!entry) {
+        const [wk, wp] = await Promise.all([wiktionary(w, String(raw).trim()), capitalised || w.length > 3 ? wikipedia(String(raw).trim()) : null]);
+        entry = wk || (await freeDictionary(w).catch(() => null)) || (await wordnet(w)) || wp;
+        if (entry && wp && entry !== wp) entry.wiki = { title: wp.word, extract: wp.meanings[0].defs[0].d, thumb: wp.thumb, url: wp.sourceUrl, description: wp.meanings[0].pos };
+      }
+      if (entry) {
+        await idb.put("defs", { id: key, entry });
         return { status: "ok", entry };
       }
-      await idb.put("defs", { id: w, missing: true, at: Date.now() });
-      return { status: "missing" };
+      const sugg = await suggestions(w);
+      await idb.put("defs", { id: key, missing: true, at: Date.now(), suggestions: sugg });
+      return { status: "missing", suggestions: sugg };
     } catch {
       return { status: navigator.onLine ? "error" : "offline" };
     } finally {
-      inflight.delete(w);
+      inflight.delete(key);
     }
   })();
-  inflight.set(w, p);
+  inflight.set(key, p);
   return p;
 }
 
@@ -100,7 +185,7 @@ export function wordId(word) {
 }
 
 /** Save (or update) a word in the vocabulary. */
-export async function saveWord({ word, entry, source }) {
+export async function saveWord({ word, entry, source, customDef }) {
   const id = wordId(entry?.word || word);
   const existing = store.get("words", id);
   const base = existing || {
@@ -117,6 +202,8 @@ export async function saveWord({ word, entry, source }) {
     phonetic: entry?.phonetic || base.phonetic || "",
     audio: entry?.audio || base.audio || "",
     meanings: entry?.meanings || base.meanings || [],
+    origin: entry?.source || base.origin || (customDef ? "mine" : ""),
+    ...(customDef ? { customDef } : {}),
     source: source || base.source || null,
     sources: mergeSources(base.sources, source),
   });

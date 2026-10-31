@@ -13,9 +13,10 @@ export function onRoute(fn) {
 }
 
 export function parse(hash = location.hash) {
-  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  const [path, qs = ""] = hash.replace(/^#\/?/, "").split("?");
+  const parts = path.split("/").filter(Boolean).map(decodeURIComponent);
   const view = parts[0] || "library";
-  return { view, args: parts.slice(1) };
+  return { view, args: parts.slice(1), query: Object.fromEntries(new URLSearchParams(qs)) };
 }
 
 export function route() {

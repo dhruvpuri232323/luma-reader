@@ -1,24 +1,53 @@
 # Luma Reader
 
-A calm PDF reader for laptop and phone. Rest the pointer on any word (or tap it on a phone) for an instant definition, save it to your vocabulary in one click, highlight and annotate passages on the original page, and pick up on one device exactly where you stopped on the other.
+A calm reader for PDFs, EPUB books and web articles, on laptop and phone. It sets any of them as a real book in your typeface, reads it aloud like an audiobook (with a different voice for each character), defines any word you rest on, finds the hard words before you meet them, and keeps your place, notes and words in step across your devices. Free to use, no ads, no paid services.
 
 - **Code & hosting:** GitHub repository, published to GitHub Pages by GitHub Actions
-- **Accounts & sync:** Firebase Authentication (Google sign-in) + Cloud Firestore; optional Cloud Storage for the PDF files
+- **Sync (pick one or both, both free):** Firebase (Google sign-in + Firestore) for progress, notes and words — and/or your own **Google Drive** for the book files themselves (and, if you like, everything else)
 - **No build step:** plain HTML, CSS and JavaScript modules. PDF.js is vendored in `vendor/`
 
 **→ Setup guide: [docs/SETUP.md](docs/SETUP.md)** (≈15 minutes, no installs)
 
 ## What it does
 
-| Area | Features |
-|---|---|
-| Dictionary | Hover or tap to define · adjustable hover delay, on/off · pronunciation (audio or device voice) · phonetics · all parts of speech · synonyms & antonyms · works offline for words seen before · Define button on any selection |
-| Vocabulary | One-click save with book, page and the sentence it came from · your own definition and memory trick · search · learning / mastered · flashcards · spaced-repetition review (Again/Hard/Good/Easy) · CSV export |
-| Library | Import several PDFs, drag & drop, phone file picker, Android share sheet, "Open with" on desktop · duplicate detection (SHA-256) · cover thumbnails · rename, pin, search, filter, sort · progress %, status, continue reading · mark finished, reset progress · download original · delete |
-| Reading | Tabs for several books (restored on reopen) · side-by-side comparison with its own page controls · continuous scroll · page jump · keyboard paging · zoom (buttons, Ctrl+wheel, pinch) · fit width/page · rotate · built-in table of contents · full-text search with result list *and* on-page highlights · focus mode · read page aloud · reflow mode with 5 fonts, size, spacing and column width |
-| Annotation | Bookmarks (B) · select → 4 highlight colours or a note · edit/recolour/delete by clicking a highlight · per-book and library-wide notes views with search and colour filter · Markdown export |
-| Comfort | Light, sepia, dark (pages dimmed too) and match-device themes · 5 accent colours · reduce motion · soft sound cues (can be turned off) |
-| Sync & ownership | Works with no account · Google sign-in · progress, words, notes, bookmarks, settings sync live · changes made offline queue and upload later · deletions sync · optional PDF upload · installable app that works offline · full JSON backup & restore · erase device |
+**Bring anything to read**
+- **PDF**, **EPUB**, plain text, Markdown and saved web pages (.html) — drop them on the window, pick them, “Open with” on desktop, or share them to the app on Android.
+- **Web articles from a link**: Luma keeps just the text and pictures — no ads, no pop-ups — and sets it as a book. A **“Save to Luma” button** for your bookmarks bar sends any page you're on (even ones you're signed in to); on a phone, share a link to the app.
+- **Paste text** to read, hear or study it.
+
+**Read it your way**
+- **Page view** — the original PDF, exactly as published: zoom, rotate, search, table of contents.
+- **Book view** — any book set as a real book: running headers and page numbers stripped from PDFs, paragraphs rejoined, chapters detected, **footnotes lifted out into tap-to-read pop-ups**. Your typeface (Literata, EB Garamond, Newsreader, Atkinson Hyperlegible, Lexend, **OpenDyslexic** or your device's), size, spacing, margins, justification. Two-page spreads on laptops, one page on phones; **page turns that slide, curl like paper, or snap**; or **one continuous scroll**.
+- **Reading ruler** (R) that keeps your eye on the line, **warm light** in the evening, focus mode, light/sepia/dark.
+- **Auto-scroll** (A): the page glides — or turns — at your own reading speed, like a teleprompter.
+- **“Where was I?”** — come back after a while and a card shows the chapter, the last lines you read and your latest note, with one tap to hear the last paragraph again.
+- Minutes left in the chapter, learned from how fast *you* read.
+
+**Listen like an audiobook**
+- Press the headphones (or L): read aloud sentence by sentence with natural pauses; **the sentence and the very word being spoken light up, and the page turns or scrolls by itself to follow the voice**. Scroll away and it waits, with a **Back to the voice** button.
+- **Character voices**: Luma works out who is speaking each line of dialogue (“said Mary”, “she asked”, who is acting in the paragraph, the back-and-forth of a conversation) and gives each character their own voice — women and men in fitting voices — while the narrator keeps yours. Change any of them under *Who's who*.
+- **Natural voices** run on your device (Kokoro, ~90 MB once, then offline). Until then, the best voice your device has.
+- Skips citations like (Smith, 2004) and [12], figure captions and footnote markers; **your own pronunciations** for names it gets wrong.
+- **Save a chapter as an audio file** to play in any podcast or music app.
+- Speed, sleep timer, headset and lock-screen controls; keeps playing with the screen off on phones.
+
+**Understand every word**
+- Hover (laptop) or tap (phone) any word: meanings, pronunciation, examples. If the dictionary doesn't know it: Wiktionary, WordNet, then Wikipedia for names and places; then “did you mean”, **Search Google**, or **add it with your own meaning**.
+- **Words here**: before you read a chapter, Luma lists the rare words in it (real word frequencies, not guesses), with their meanings and the sentence they're in — save one or all, and have them underlined as you read.
+
+**Learn what you read**
+- Save words with the book, page and sentence you found them in; your saved words are underlined wherever they turn up again, and each word shows **where else it appears in your library**.
+- Practise in five ways: spaced-repetition review **in the original sentence**, flashcards, **meaning quiz**, **spell it from sound**, **say it aloud** (speech recognition), and **use it in your own sentence**.
+- Daily goal and streak, a count on the Words tab, **daily review reminders** (notifications where the browser allows, or a calendar reminder), CSV and **Anki** export.
+
+**Notes & thinking**
+- Highlights in four colours, notes, **tags**, and a **Starred** collection — your commonplace book across every book. Quote **cards** (paper, night or colour; portrait, square or story) to save or share.
+- **Search everything**: titles, the full text inside every book you've opened, your notes and your words — from the library's search box.
+- Export to **Markdown**, **Obsidian** (one note per book, with front matter and tags), a web page, or copy with formatting straight into **Google Docs, Word, Notion** or an email.
+
+**Library & sync**
+- Covers, pin, rename, filter, sort, progress, continue reading, tabs for several books, side-by-side comparison.
+- Works with no account. Sign in with Google to sync through Firebase; connect **Google Drive** and books you add on one device open on all the others — Drive can also carry your notes, words and progress on its own. Offline-first, installable, full JSON backup and restore.
 
 ## Repository structure
 
@@ -31,14 +60,20 @@ luma-reader/
 │   ├── app.css                Design tokens, themes, shell, library, words, notes, settings
 │   └── reader.css             Reader, dictionary card, highlights, reflow, mobile sheets
 ├── js/
-│   ├── firebase-config.js     ← the only file you edit (Firebase keys, cloud PDF switch)
+│   ├── firebase-config.js     ← the only file you edit (Firebase keys, Google Drive client ID)
 │   ├── main.js                Boot, navigation, drag & drop
 │   ├── core/                  util (DOM helpers), feel (themes, sounds, speech), pwa (install, share)
-│   ├── data/                  db (IndexedDB), store (records + outbox), library, dictionary, backup
-│   ├── sync/                  sync (two-way engine), firebase (Auth/Firestore/Storage adapter)
-│   ├── reader/                reader (view), tab (one book), pdf (PDF.js), lookup (word under pointer),
-│   │                          annotate (highlights/bookmarks), compare (second pane)
-│   └── ui/                    library, words, notes, settings, definition card, overlays, icons, router
+│   ├── data/                  db (IndexedDB), store (records + outbox), library, importers (EPUB, articles,
+│   │                          Markdown), dictionary, fulltext (search inside books), exporters, backup
+│   ├── sync/                  sync (two-way engine), firebase (Firestore adapter), drive (Google Drive)
+│   ├── reader/                reader (view), tab (one book), pdf (PDF.js), bookmodel (PDF → clean text),
+│   │                          textmodel (EPUB/articles), bookview (Book view), player (Listen),
+│   │                          dialogue (character voices), autoscroll, recap, hardwords (Words here),
+│   │                          textindex (text ↔ DOM), lookup, annotate, compare
+│   ├── core/voice.js          natural (Kokoro, on-device) and device voices; tts-worker.js runs the model
+│   ├── core/reminders.js      daily review count, nudges, notifications, calendar reminder
+│   └── ui/                    library, add (files/links/paste), words, practice, notes, export, quote cards,
+│                              settings, definition card, overlays, icons, router
 ├── vendor/pdfjs/              PDF.js 6.2 (Apache-2.0), fonts, CMaps, WASM decoders
 ├── icons/                     App icons
 ├── firebase/                  firestore.rules, storage.rules, indexes
@@ -48,7 +83,7 @@ luma-reader/
 │   └── firebase-rules.yml     Optional: publishes security rules
 ├── docs/                      SETUP.md, FEATURE_SPEC.md
 ├── scripts/serve.mjs          Local dev server (no dependencies)
-└── tests/                     End-to-end test (laptop + phone + sync + offline) and sample PDFs
+└── tests/                     End-to-end test (laptop + phone + tablet + sync + Drive + offline), sample books
 ```
 
 ## How sync works
@@ -83,8 +118,8 @@ node scripts/serve.mjs &      # keep running
 npm test
 ```
 
-The test drives a laptop and a phone (Pixel 7 viewport) in Chromium against a stand-in cloud: import, hover/tap definitions, saving words, highlights and notes, bookmarks, contents, search, zoom, reflow, comparison, tabs, flashcard review, exports, theme, sign-in, laptop→phone and phone→laptop sync, deletion sync, and reopening offline. Screenshots land in `tests/output/`.
+The test (106 checks) drives a laptop, a phone (Pixel 7) and a tablet in Chromium with stand-ins for Firebase, Google Drive, the dictionaries, the article reader and the voice model: Page and Book view, typography, page turns and page curl, scroll layout, ruler, auto-scroll, footnotes, EPUB and web articles, dictionary fallbacks, “Words here”, highlights across both views, listening with character voices and word-by-word follow-along, chapter audio export, search inside books, tags and the commonplace book, exports (Markdown/Obsidian/Anki/quote cards), practice modes, sync through Firebase and through Drive, and reopening offline. Screenshots land in `tests/output/`. `tests/fixtures/make_v3_fixtures.py` rebuilds the sample EPUB and footnoted PDF.
 
 ## Credits
 
-PDF rendering by [PDF.js](https://mozilla.github.io/pdf.js/) (Apache-2.0). Definitions from the [Free Dictionary API](https://dictionaryapi.dev/). Fonts: Newsreader, Literata, Atkinson Hyperlegible, Lexend (Google Fonts, OFL).
+PDF rendering by [PDF.js](https://mozilla.github.io/pdf.js/) (Apache-2.0). Natural voices by [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) via [kokoro-js](https://www.npmjs.com/package/kokoro-js) (Apache-2.0), downloaded on first use. Definitions from the [Free Dictionary API](https://dictionaryapi.dev/), [Wiktionary](https://en.wiktionary.org/), [Wikipedia](https://en.wikipedia.org/) and [Datamuse](https://www.datamuse.com/api/) (WordNet). Word frequencies for “Words here” from [Datamuse](https://www.datamuse.com/api/). Web articles fetched with [Jina Reader](https://jina.ai/reader/) (free, no key). Fonts: Newsreader, Literata, Atkinson Hyperlegible, Lexend (Google Fonts, OFL) and [OpenDyslexic](https://opendyslexic.org/) (OFL, via cdnjs).

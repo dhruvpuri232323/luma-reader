@@ -1,7 +1,9 @@
 // Library: import, browse, search and manage books.
 import { el, $, debounce, relTime, downloadBlob, bus, setKids } from "../core/util.js";
 import { store } from "../data/store.js";
-import { importFiles, progressOf, statusOf, STATUS_LABEL, resetProgress, setCompleted } from "../data/library.js";
+import { importFiles, progressOf, statusOf, STATUS_LABEL, resetProgress, setCompleted, kindOf } from "../data/library.js";
+import { searchBooks, searchNotes, searchWords, indexedCount, forget } from "../data/fulltext.js";
+import { addMenu, articleDialog, pasteDialog } from "./add.js";
 import { sync } from "../sync/sync.js";
 import { icon } from "./icons.js";
 import { toast, confirmDialog, promptDialog, menu } from "./overlay.js";
@@ -36,9 +38,9 @@ export async function pickAndImport() {
 
 export async function runImport(files, { openAfter = false } = {}) {
   if (!files?.length) return [];
-  const pdfs = [...files].filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name || ""));
-  if (!pdfs.length) { toast("Only PDF files can be added."); return []; }
-  const close = toast(pdfs.length > 1 ? `Adding ${pdfs.length} PDFs…` : `Adding “${pdfs[0].name}”…`, { duration: 60000 });
+  const pdfs = [...files].filter((f) => kindOf(f));
+  if (!pdfs.length) { toast("Luma reads PDF, EPUB, text, Markdown and saved web pages (.html)."); return []; }
+  const close = toast(pdfs.length > 1 ? `Adding ${pdfs.length} books…` : `Adding “${pdfs[0].name}”…`, { duration: 60000 });
   const results = await importFiles(pdfs);
   close();
   const added = results.filter((r) => r.status === "added").length;
@@ -90,17 +92,18 @@ function render() {
   setKids(root, 
     el("header.view-head", {},
       el("div.view-title", {}, el("h1", {}, "Library"),
-        el("p.muted", {}, all.length ? `${all.length} ${all.length === 1 ? "book" : "books"}` : "Your PDFs, ready on every device")),
+        el("p.muted", {}, all.length ? `${all.length} ${all.length === 1 ? "book" : "books"}` : "Your books and articles, ready on every device")),
       el("div.head-actions", {},
-        el("button.btn.primary", { onclick: pickAndImport, id: "import-btn" }, icon("plus", 18), el("span", {}, "Add PDFs")))
+        el("button.btn.primary", { onclick: (e) => addMenu(e.currentTarget), id: "import-btn", "aria-haspopup": "menu" }, icon("plus", 18), el("span", {}, "Add")))
     ),
     all.length ? toolbar(counts) : null,
     all.length && current && !ui.query && ui.filter === "all" ? continueCard(current) : null,
     all.length
       ? docs.length
         ? el("div.shelf", { role: "list" }, docs.map(bookCard))
-        : el("p.empty-line", {}, "No books match. ", el("button.link", { onclick: () => { ui.query = ""; ui.filter = "all"; render(); } }, "Clear filters"))
-      : emptyState()
+        : ui.query.trim().length >= 2 ? null : el("p.empty-line", {}, "No books match. ", el("button.link", { onclick: () => { ui.query = ""; ui.filter = "all"; render(); } }, "Clear filters"))
+      : emptyState(),
+    all.length && ui.query.trim().length >= 2 ? everywhere(ui.query.trim(), docs.length) : null,
   );
   if (focusSearch) {
     const s = $("#lib-search", root);
@@ -116,7 +119,7 @@ function toolbar(counts) {
       "aria-pressed": String(ui.filter === key),
     }, label, el("span.chip-count", {}, counts[key]));
   const search = el("input.input.search", {
-    id: "lib-search", type: "search", placeholder: "Search titles", value: ui.query, "aria-label": "Search library",
+    id: "lib-search", type: "search", placeholder: "Search books, inside books, notes & words", value: ui.query, "aria-label": "Search everything",
     oninput: debounce((e) => { ui.query = e.target.value; render(); }, 120),
   });
   const sort = el("select.select", { "aria-label": "Sort books", onchange: (e) => { ui.sort = e.target.value; render(); } },
@@ -129,12 +132,45 @@ function toolbar(counts) {
     sort);
 }
 
+/** Search results from inside books, notes and words. */
+function everywhere(q, titleMatches) {
+  const box = el("section.everywhere", { "aria-live": "polite" });
+  const mark = (before, match, after) => [before ? "…" + before : "", el("mark", {}, match), after + "…"];
+  (async () => {
+    const [books, count] = await Promise.all([searchBooks(q), indexedCount()]);
+    if (ui.query.trim() !== q || !box.isConnected) return;
+    const notes = searchNotes(q);
+    const words = searchWords(q);
+    const total = store.list("docs").length;
+    const sections = [];
+    if (books.length) sections.push(el("div.ev-sec", {}, el("h2.ev-head", {}, "Inside your books"),
+      books.map(({ doc, total: n, hits }) => el("div.ev-book", {},
+        el("p.ev-title", {}, el("button.link", { onclick: () => openAt(doc.id, hits[0].page, q) }, doc.title), el("span.muted.small", {}, ` · ${n} ${n === 1 ? "match" : "matches"}`)),
+        el("ul.item-list", {}, hits.map((h) => el("li.item", {}, el("button.item-main", { onclick: () => openAt(doc.id, h.page, q) },
+          el("span.item-page", {}, `p. ${h.page}`), el("span.item-text", {}, ...mark(h.before, h.match, h.after))))))))));
+    if (notes.length) sections.push(el("div.ev-sec", {}, el("h2.ev-head", {}, "In your notes"),
+      el("ul.item-list", {}, notes.map(({ ann, doc }) => el("li.item.note-item", { dataset: { color: ann.color } }, el("button.item-main", { onclick: () => navigate(`#/read/${doc.id}/${ann.page}`) },
+        el("span.item-page", {}, `p. ${ann.page}`), el("span.item-quote", {}, ann.text), ann.note ? el("span.item-note", {}, ann.note) : null, el("span.item-meta", {}, doc.title)))))));
+    if (words.length) sections.push(el("div.ev-sec", {}, el("h2.ev-head", {}, "In your words"),
+      el("div.chips", {}, words.map((w) => el("button.chip", { onclick: () => navigate(`#/words?w=${encodeURIComponent(w.word)}`) }, w.word)))));
+    if (!sections.length && !titleMatches) sections.push(el("p.empty-line", {}, `Nothing found for “${q}”.`));
+    if (count < total) sections.push(el("p.muted.small.ev-note", {}, `${count} of ${total} books can be searched inside — a book becomes searchable after you open it once on this device.`));
+    setKids(box, ...sections);
+  })();
+  return box;
+}
+
+function openAt(docId, page, q) {
+  try { sessionStorage.setItem("luma.find", JSON.stringify({ docId, q })); } catch {}
+  navigate(`#/read/${docId}/${page}`);
+}
+
 function coverEl(doc, size = "") {
   const wrap = el("div.cover" + (size ? "." + size : ""), { style: { "--hue": doc.hue ?? 210 } });
   const known = coverCache.get(doc.id);
   const fill = (src) => {
     if (src) wrap.append(el("img", { src, alt: "", loading: "lazy", decoding: "async" }));
-    else wrap.append(el("div.cover-type", {}, el("span.cover-title", {}, doc.title), el("span.cover-rule")));
+    else wrap.append(el("div.cover-type", {}, el("span.cover-title", {}, doc.title), el("span.cover-rule"), doc.author ? el("span.cover-author", {}, doc.author) : null));
   };
   if (known !== undefined) fill(known);
   else store.getCover(doc.id).then((src) => { coverCache.set(doc.id, src); fill(src); });
@@ -171,9 +207,10 @@ function bookCard(doc) {
     el("div.book-meta", {},
       el("h3.book-title", { title: doc.title }, doc.pinned ? icon("pin", 14) : null, doc.title),
       el("p.book-sub", {},
+        doc.kind === "text" && doc.source ? el("span.kind", {}, "Article · ") : doc.kind === "epub" ? el("span.kind", {}, "EPUB · ") : null,
         el("span.status." + status, {}, STATUS_LABEL[status]),
         status === "reading" ? el("span", {}, ` · ${pct}%`) : null,
-        !local ? el("span.badge", { title: "The PDF file isn't on this device yet" }, icon("cloud", 13), "Other device") : null,
+        !local ? el("span.badge", { title: "The book's file isn't on this device yet" }, icon("cloud", 13), "Other device") : null,
         up != null ? el("span.badge", {}, `Uploading ${Math.round(up * 100)}%`) : null),
     ),
     more);
@@ -196,10 +233,11 @@ function docMenu(anchor, doc, local) {
       }
     } },
     "-",
-    local ? { label: "Download PDF", icon: "download", onClick: async () => downloadBlob(await store.getFile(doc.id), doc.fileName || doc.title + ".pdf") } : null,
+    local ? { label: doc.kind === "epub" ? "Download EPUB" : doc.kind === "text" ? "Download book file" : "Download PDF", icon: "download", onClick: async () => downloadBlob(await store.getFile(doc.id), doc.fileName || doc.title + (doc.kind === "epub" ? ".epub" : doc.kind === "text" ? ".json" : ".pdf")) } : null,
+    doc.source ? { label: "Open the original page", icon: "globe", onClick: () => window.open(doc.source, "_blank", "noopener") } : null,
     local && sync.cloudPdfs && !doc.cloud ? { label: "Upload to cloud", icon: "cloud", onClick: () => sync.uploadPdf(doc.id).then(() => toast("Uploaded")).catch((e) => toast(e.message, { tone: "warn" })) } : null,
     !local && sync.cloudPdfs && doc.cloud ? { label: "Download from cloud", icon: "cloud", onClick: () => fetchFromCloud(doc) } : null,
-    !local ? { label: "Add this PDF from device…", icon: "upload", onClick: pickAndImport } : null,
+    !local ? { label: "Add this file from device…", icon: "upload", onClick: pickAndImport } : null,
     "-",
     { label: "Delete", icon: "trash", danger: true, onClick: () => deleteDoc(doc) },
   ]);
@@ -222,6 +260,7 @@ export async function deleteDoc(doc) {
   for (const a of store.list("annotations").filter((a) => a.docId === doc.id)) await store.remove("annotations", a.id);
   for (const b of store.list("bookmarks").filter((b) => b.docId === doc.id)) await store.remove("bookmarks", b.id);
   await store.remove("docs", doc.id);
+  forget(doc.id);
   coverCache.delete(doc.id);
   bus.emit("doc-deleted", doc.id);
   cue("remove");
@@ -231,7 +270,10 @@ export async function deleteDoc(doc) {
 function emptyState() {
   return el("section.empty", {},
     el("div.empty-art", { "aria-hidden": "true" }, el("span"), el("span"), el("span")),
-    el("h2", {}, "Add your first PDF"),
-    el("p.muted", {}, "Drop files anywhere on this window, or choose them from your device. Books stay on this device; sign in under Settings to sync progress, words and notes to your other devices."),
-    el("button.btn.primary.lg", { onclick: pickAndImport }, icon("upload", 18), el("span", {}, "Choose PDFs")));
+    el("h2", {}, "Add your first book"),
+    el("p.muted", {}, "PDFs, EPUB books, text files, or any article on the web. Drop files anywhere on this window, or choose them below. Sign in under Settings to sync your progress, words and notes to your other devices."),
+    el("div.row.wrap.center", {},
+      el("button.btn.primary.lg", { onclick: pickAndImport }, icon("upload", 18), el("span", {}, "Choose files")),
+      el("button.btn.lg", { onclick: () => articleDialog() }, icon("link", 18), el("span", {}, "Add a web article")),
+      el("button.btn.lg", { onclick: () => pasteDialog() }, icon("paste", 18), el("span", {}, "Paste text"))));
 }

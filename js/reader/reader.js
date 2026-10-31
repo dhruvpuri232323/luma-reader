@@ -1,20 +1,30 @@
-// Reader view: tabs, toolbar, side panel (contents, bookmarks, notes, search),
-// comparison pane, selection toolbar, focus mode and read-aloud.
+// Reader view: tabs, Page/Book switch, toolbar, side panel (contents,
+// bookmarks, notes, search), comparison pane, selection toolbar, focus mode,
+// and the Listen player.
 import { el, $, $$, bus, debounce, isNarrow, clamp, downloadBlob, relTime, setKids } from "../core/util.js";
 import { store } from "../data/store.js";
 import { sync } from "../sync/sync.js";
-import { importFiles } from "../data/library.js";
+import { drive } from "../sync/drive.js";
+import { indexInBackground } from "../data/fulltext.js";
+import { importFiles, ACCEPT } from "../data/library.js";
 import { Tab } from "./tab.js";
 import { ComparePane } from "./compare.js";
 import { attachLookup, wordAtPoint, contextAround } from "./lookup.js";
 import {
-  COLORS, rangeText, renderPageHighlights, rerenderAll, createHighlight, highlightAt, annotationsFor,
+  COLORS, rangeText, renderPageHighlights, rerenderAll, createHighlight, createTextHighlight, highlightAt, annotationsFor,
   bookmarksFor, isBookmarked, toggleBookmark,
 } from "./annotate.js";
 import { showDefinition, hideDefinition } from "../ui/definition.js";
 import { icon } from "../ui/icons.js";
 import { toast, menu, dialog, confirmDialog, closeMenus } from "../ui/overlay.js";
-import { speech, cue, REFLOW_FONTS, ACCENTS } from "../core/feel.js";
+import { cue } from "../core/feel.js";
+import { player, exportChapterAudio, pronunciationsDialog } from "./player.js";
+import { AutoScroll } from "./autoscroll.js";
+import { maybeRecap } from "./recap.js";
+import { renderWordsHere } from "./hardwords.js";
+import { quoteCardDialog } from "../ui/quotecard.js";
+import { exportNotesMenu } from "../ui/export.js";
+import { typographyControls } from "../ui/typography.js";
 import { navigate } from "../ui/router.js";
 
 const SESSION_KEY = "luma.session";
@@ -41,6 +51,7 @@ export function mountReader(root) {
       el("button.icon-btn", { "aria-label": "Back to library", title: "Library", onclick: () => navigate("#/library") }, icon("back")),
       el("div.tabstrip", { role: "tablist", "aria-label": "Open books" }),
       el("button.tab-switch", { onclick: (e) => tabMenu(e.currentTarget), "aria-label": "Switch book" }),
+      el("div.mode-seg", { role: "group", "aria-label": "View" }),
       el("div.reader-actions")),
     el("div.reader-body", {},
       el("div.stage"),
@@ -49,13 +60,15 @@ export function mountReader(root) {
     el("button.focus-exit", { onclick: () => setFocus(false), "aria-label": "Exit focus mode" }, icon("focus", 18), el("span", {}, "Exit focus")),
   );
   renderActions();
+  player.mount(root);
+  R.auto = new AutoScroll(root);
 
   attachLookup($(".stage", root), (node) => {
     const pane = node.parentElement.closest(".tab-pane");
     const tab = pane && R.tabs.get(pane.dataset.doc);
     if (!tab) return null;
     let page = tab.currentPage();
-    const pageDiv = node.parentElement.closest(".page, .reflow-page");
+    const pageDiv = node.parentElement.closest(".page, .bk-b");
     if (pageDiv) page = Number(pageDiv.dataset.pageNumber || pageDiv.dataset.page) || page;
     return { docId: tab.docId, title: tab.doc?.title || "", page };
   });
@@ -68,8 +81,27 @@ export function mountReader(root) {
   bus.on("tab-page", (tab) => { if (tab.docId === R.active) { renderBottom(); updateBookmarkButton(); if (R.panel === "bookmarks") renderPanel(); } });
   bus.on("tab-scale", (tab) => tab.docId === R.active && renderBottom());
   bus.on("tab-rotation", (tab) => rerenderAll(tab));
-  bus.on("tab-mode", (tab) => { if (tab.docId === R.active) { renderActions(); renderBottom(); } });
-  bus.on("tab-ready", (tab) => { if (tab.docId === R.active) { renderActions(); if (R.panel) renderPanel(); } });
+  bus.on("tab-mode", (tab) => {
+    if (tab.docId !== R.active) return;
+    if (player.active) player.stop();
+    if (R.auto?.on) R.auto.stop();
+    if (tab.mode === "book" && R.search.query && R.search.docId === tab.docId) tab.book?.highlightQuery(R.search.query);
+    if (tab.mode === "pdf") setTimeout(() => rerenderAll(tab), 60);
+    renderActions(); renderBottom();
+    if (R.panel) renderPanel();
+  });
+  bus.on("book-tap-center", (tab) => { if (tab.docId === R.active) setFocus(!R.focus, { quiet: true }); });
+  bus.on("book-unavailable", (tab) => { if (tab.docId === R.active) toast("This PDF is scanned page images, so there's no text to set as a book. Showing the original pages."); });
+  bus.on("tab-ready", (tab) => {
+    if (tab.docId === R.active) { renderActions(); if (R.panel) renderPanel(); }
+    setTimeout(() => indexInBackground(tab).catch(() => {}), 2500);
+    if (tab.recapFrom) {
+      const from = tab.recapFrom;
+      tab.recapFrom = null;
+      setTimeout(() => maybeRecap(tab, from, { onListen: (start) => toggleListen(start) }), 900);
+    }
+    pendingFind(tab);
+  });
   bus.on("page-layer", ({ tab, pageNumber }) => renderPageHighlights(tab, pageNumber));
   bus.on("annotations-changed", (docId) => {
     const t = R.tabs.get(docId);
@@ -108,10 +140,14 @@ export async function openDoc(docId, page) {
     R.order.push(docId);
     $(".stage", R.root).append(tab.el);
   }
+  const lastOpened = doc.openedAt;
   activate(docId);
   const tab = R.tabs.get(docId);
-  if (tab.state === "idle") await tab.load(page);
-  else if (page) tab.goTo(page);
+  if (tab.state === "idle") {
+    if (!page) tab.recapFrom = lastOpened;
+    await tab.load(page);
+  } else if (page) tab.goTo(page);
+  if (tab.state === "ready") pendingFind(tab);
   saveSession();
 }
 
@@ -119,12 +155,14 @@ function activate(docId) {
   R.active = docId;
   for (const [id, t] of R.tabs) {
     const on = id === docId;
+    if (!on && t.el.classList.contains("active")) t.hidden();
     t.el.classList.toggle("active", on);
     t.el.inert = !on;
     if (on) requestAnimationFrame(() => t.shown());
   }
   hideDefinition();
-  stopSpeaking();
+  if (player.active && player.tab?.docId !== docId) player.stop();
+  if (R.auto?.on && R.auto.tab?.docId !== docId) R.auto.stop();
   renderTabs();
   renderActions();
   renderBottom();
@@ -218,8 +256,9 @@ function renderPaneState(tab) {
   if (tab.state === "loading") {
     setKids(msg, el("div.spinner", { "aria-label": "Opening" }), el("p.muted", {}, "Opening…"));
   } else if (tab.state === "missing") {
-    const canCloud = sync.cloudPdfs && doc?.cloud;
-    const pick = el("input", { type: "file", accept: "application/pdf,.pdf", hidden: true, onchange: async (e) => {
+    const canDrive = drive.enabled && doc?.driveId;
+    const canCloud = (sync.cloudPdfs && doc?.cloud) || canDrive;
+    const pick = el("input", { type: "file", accept: ACCEPT, hidden: true, onchange: async (e) => {
       const res = await importFiles(e.target.files);
       const r = res[0];
       if (r?.id === tab.docId) { cue("save"); toast("Book linked to this device"); }
@@ -230,19 +269,19 @@ function renderPaneState(tab) {
       el("p.muted", {}, canCloud
         ? "This book was added on another device. Download it here to keep reading where you left off."
         : sync.cloudPdfs
-          ? "This book was added on another device and its PDF hasn't been uploaded yet. Open the app on that device while signed in, or add the same PDF here."
-          : "This book was added on another device. Add the same PDF file here and your progress, notes and words connect to it automatically."),
+          ? "This book was added on another device and its file hasn't been uploaded yet. Open the app on that device while signed in, or add the same file here."
+          : "This book was added on another device. Add the same file here — or turn on Google Drive book sync in Settings — and your progress, notes and words connect to it automatically."),
       el("p.small.muted", {}, `Last read at page ${doc?.lastPage || 1}${doc?.pages ? ` of ${doc.pages}` : ""}`),
       el("div.row", {},
         canCloud ? el("button.btn.primary", { onclick: async (e) => {
           e.currentTarget.disabled = true;
           e.currentTarget.textContent = "Downloading…";
-          try { await sync.downloadPdf(tab.docId); } catch (err) { toast(err.message || "Download failed", { tone: "warn" }); renderPaneState(tab); }
-        } }, icon("cloud", 18), el("span", {}, "Download from cloud")) : null,
-        el("button.btn" + (canCloud ? "" : ".primary"), { onclick: () => pick.click() }, icon("upload", 18), el("span", {}, "Choose the PDF")),
+          try { await (canDrive ? drive.downloadBook(tab.docId) : sync.downloadPdf(tab.docId)); } catch (err) { toast(err.message || "Download failed", { tone: "warn" }); renderPaneState(tab); }
+        } }, icon(canDrive ? "drive" : "cloud", 18), el("span", {}, canDrive ? "Download from Google Drive" : "Download from cloud")) : null,
+        el("button.btn" + (canCloud ? "" : ".primary"), { onclick: () => pick.click() }, icon("upload", 18), el("span", {}, "Choose the file")),
         pick));
   } else if (tab.state === "error") {
-    setKids(msg, el("h2", {}, "This PDF couldn't be opened"), el("p.muted", {}, tab.error || "The file may be damaged or password-protected."),
+    setKids(msg, el("h2", {}, "This book couldn't be opened"), el("p.muted", {}, tab.error || "The file may be damaged or password-protected."),
       el("button.btn", { onclick: () => closeTab(tab.docId) }, "Close tab"));
   }
 }
@@ -253,30 +292,53 @@ function actionBtn(name, label, onClick, { on = false, cls = "" } = {}) {
   return el("button.icon-btn" + (on ? ".on" : "") + cls, { "aria-label": label, title: label, onclick: onClick, "aria-pressed": on ? "true" : null, dataset: { action: name } }, icon(name === "bookmark" && on ? "bookmarkOn" : name));
 }
 
+function renderModeSeg() {
+  const box = $(".mode-seg", R.root);
+  if (!box) return;
+  const tab = activeTab();
+  const ready = tab?.state === "ready";
+  const mode = tab?.mode || "pdf";
+  if (tab && tab.doc && tab.kind !== "pdf") {
+    const label = tab.kind === "epub" ? "EPUB" : tab.doc.source ? "Article" : "Text";
+    setKids(box, el("span.mode-chip", { title: "Text books always open in Book view" }, icon("openBook", 17), el("span", {}, label)));
+    return;
+  }
+  setKids(box,
+    el("button" + (mode === "pdf" ? ".on" : ""), { disabled: !ready, "aria-pressed": String(mode === "pdf"), title: "Original pages", onclick: () => tab?.setMode("pdf") },
+      icon("pages", 17), el("span", {}, "Page")),
+    el("button" + (mode === "book" ? ".on" : ""), { disabled: !ready, "aria-pressed": String(mode === "book"), title: "Set as a book: your font, size and page turns", onclick: () => openBookView() },
+      icon("openBook", 17), el("span", {}, "Book")));
+}
+
+async function openBookView() {
+  const tab = activeTab();
+  if (!tab || tab.state !== "ready") return;
+  await tab.setMode("book");
+}
+
 function renderActions() {
+  renderModeSeg();
   const box = $(".reader-actions", R.root);
   if (!box) return;
   const tab = activeTab();
   const ready = tab?.state === "ready";
   const narrow = isNarrow();
-  const reflow = tab?.mode === "reflow";
   const page = tab?.currentPage() || 1;
   const bm = tab && isBookmarked(tab.docId, page);
   const items = [
-    actionBtn("search", "Search in book (Ctrl+F)", () => togglePanel("search"), { on: R.panel === "search" }),
+    actionBtn("headphones", player.active ? "Stop listening (L)" : "Listen — read aloud (L)", () => toggleListen(), { on: player.active }),
+    narrow ? null : actionBtn("search", "Search in book (Ctrl+F)", () => togglePanel("search"), { on: R.panel === "search" }),
     actionBtn("toc", "Contents, bookmarks & notes", () => togglePanel(R.panel && R.panel !== "search" ? R.panel : "contents"), { on: R.panel && R.panel !== "search" }),
-    actionBtn("bookmark", bm ? "Remove bookmark (B)" : "Bookmark this page (B)", () => bookmarkCurrent(), { on: bm }),
+    narrow ? null : actionBtn("bookmark", bm ? "Remove bookmark (B)" : "Bookmark this page (B)", () => bookmarkCurrent(), { on: bm }),
   ];
   const secondary = [
-    actionBtn("reflow", reflow ? "Show original pages" : "Reflow text", () => toggleReflow(), { on: reflow }),
+    actionBtn("type", "Fonts, size & theme", (e) => appearancePopover(e.currentTarget)),
     actionBtn("compare", "Compare with another PDF", () => toggleCompare(), { on: Boolean(R.compare) }),
-    actionBtn("type", "Reading appearance", (e) => appearancePopover(e.currentTarget)),
-    actionBtn("speak", R.speaking ? "Stop reading aloud" : "Read this page aloud", () => toggleSpeak(), { on: R.speaking }),
     actionBtn("focus", "Focus mode (F)", () => setFocus(true)),
   ];
   const more = el("button.icon-btn", { "aria-label": "More", title: "More", onclick: (e) => moreMenu(e.currentTarget) }, icon("more"));
   setKids(box, ...items, ...(narrow ? [] : [el("span.divider"), ...secondary]), more);
-  box.querySelectorAll("button").forEach((b) => { if (b !== more && b.dataset.action !== "compare" && b.dataset.action !== "type") b.disabled = !ready && b.dataset.action !== "toc"; });
+  box.querySelectorAll("button").forEach((b) => { if (b !== more && !["compare", "type", "toc"].includes(b.dataset.action)) b.disabled = !ready; });
 }
 
 function updateBookmarkButton() {
@@ -293,52 +355,79 @@ function updateBookmarkButton() {
 function moreMenu(anchor) {
   const tab = activeTab();
   const narrow = isNarrow();
-  const reflow = tab?.mode === "reflow";
+  const book = tab?.mode === "book";
+  const ready = tab?.state === "ready";
+  const bm = tab && isBookmarked(tab.docId, tab.currentPage());
+  const s = store.settings();
+  const ext = tab?.kind === "epub" ? "epub" : tab?.kind === "text" ? "json" : "pdf";
   menu(anchor, [
-    narrow ? { label: reflow ? "Show original pages" : "Reflow text", icon: "reflow", onClick: toggleReflow } : null,
-    narrow ? { label: R.compare ? "Close comparison" : "Compare with another PDF", icon: "compare", onClick: toggleCompare } : null,
-    narrow ? { label: "Reading appearance", icon: "type", onClick: () => appearancePopover(anchor) } : null,
-    narrow ? { label: R.speaking ? "Stop reading aloud" : "Read this page aloud", icon: "speak", onClick: toggleSpeak } : null,
+    narrow ? { label: "Search in book", icon: "search", onClick: () => togglePanel("search") } : null,
+    narrow ? { label: bm ? "Remove bookmark" : "Bookmark this page", icon: bm ? "bookmarkOn" : "bookmark", onClick: bookmarkCurrent } : null,
+    narrow ? { label: "Fonts, size & theme", icon: "type", onClick: () => appearancePopover(anchor) } : null,
+    narrow && tab?.hasPages !== false ? { label: R.compare ? "Close comparison" : "Compare with another PDF", icon: "compare", onClick: toggleCompare } : null,
     narrow ? { label: "Focus mode", icon: "focus", onClick: () => setFocus(true) } : null,
     narrow ? "-" : null,
-    { label: "Rotate pages", icon: "rotate", onClick: () => tab?.rotate() },
-    { label: "Fit page width", icon: "fit", onClick: () => tab?.setZoom("page-width") },
-    { label: "Fit whole page", icon: "focus", onClick: () => tab?.setZoom("page-fit") },
-    "-",
-    { label: "Export notes as Markdown", icon: "file", onClick: () => exportDocNotes(tab?.docId) },
-    { label: "Download PDF", icon: "download", onClick: async () => {
+    ready ? { label: R.auto?.on ? "Stop auto-scroll (A)" : "Auto-scroll at reading speed (A)", icon: "down", checked: R.auto?.on, onClick: () => toggleAuto() } : null,
+    ready && book ? { label: "Reading ruler (R)", icon: "focus", checked: Boolean(s.ruler), onClick: () => toggleRuler() } : null,
+    ready ? { label: "Words worth knowing here", icon: "words", onClick: () => { R.panel = "words"; renderPanel(); renderActions(); } } : null,
+    ready ? "-" : null,
+    book || !tab ? null : { label: "Rotate pages", icon: "rotate", onClick: () => tab?.rotate() },
+    book || !tab ? null : { label: "Fit page width", icon: "fit", onClick: () => tab?.setZoom("page-width") },
+    book || !tab ? null : { label: "Fit whole page", icon: "focus", onClick: () => tab?.setZoom("page-fit") },
+    book || !tab ? null : "-",
+    ready ? { label: "Save this chapter as audio", icon: "headphones", onClick: () => exportChapterAudio(tab) } : null,
+    { label: "Pronunciations…", icon: "sound", onClick: () => pronunciationsDialog() },
+    { label: "Export notes…", icon: "file", onClick: () => exportNotesMenu(anchor, { docIds: [tab?.docId], title: tab?.doc?.title || "Notes" }) },
+    tab ? { label: `Download the ${tab.kind === "pdf" ? "PDF" : tab.kind === "epub" ? "EPUB" : "book file"}`, icon: "download", onClick: async () => {
       const b = await store.getFile(tab.docId);
-      if (b) downloadBlob(b, tab.doc?.fileName || "book.pdf");
-    } },
-    { label: "Close this book", icon: "x", onClick: () => tab && closeTab(tab.docId) },
+      if (b) downloadBlob(b, tab.doc?.fileName || `${(tab.doc?.title || "book").replace(/[\\/:*?"<>|]+/g, "-")}.${ext}`);
+    } } : null,
+    tab ? { label: "Close this book", icon: "x", onClick: () => tab && closeTab(tab.docId) } : null,
   ]);
+}
+
+function toggleAuto() {
+  const tab = activeTab();
+  if (!tab) return;
+  if (!R.auto.on && player.active) player.stop();
+  R.auto.toggle(tab);
+}
+
+async function toggleRuler() {
+  const on = !store.settings().ruler;
+  await store.setSettings({ ruler: on });
+  toast(on ? "Reading ruler on — it follows your pointer or finger" : "Reading ruler off", { duration: 2200 });
 }
 
 function renderBottom() {
   const foot = $(".reader-bottom", R.root);
   const tab = activeTab();
   if (!foot) return;
-  if (!tab || tab.state !== "ready") { setKids(foot, ); return; }
+  if (!tab || tab.state !== "ready") { setKids(foot); return; }
   const page = tab.currentPage();
   const total = tab.pages;
-  const reflow = tab.mode === "reflow";
+  const book = tab.mode === "book";
   const input = el("input.page-input", {
     type: "number", inputmode: "numeric", min: 1, max: total, value: page, "aria-label": "Page number",
     onchange: (e) => tab.goTo(Number(e.target.value)),
     onkeydown: (e) => { if (e.key === "Enter") { tab.goTo(Number(e.target.value)); e.target.blur(); } },
   });
   const scale = tab.viewer?.currentScale || 1;
-  setKids(foot, 
+  setKids(foot,
     el("div.progress-line", { style: { "--p": total ? page / total : 0 } }),
     el("div.pager", {},
-      el("button.icon-btn", { "aria-label": "Previous page", onclick: () => tab.prev(), disabled: page <= 1 }, icon("left")),
+      el("button.icon-btn", { "aria-label": book ? "Previous page" : "Previous page", onclick: () => tab.prev(), disabled: !book && page <= 1 }, icon("left")),
       el("label.page-box", {}, input, el("span.muted", {}, `of ${total}`)),
-      el("button.icon-btn", { "aria-label": "Next page", onclick: () => tab.next(), disabled: page >= total }, icon("right"))),
+      el("button.icon-btn", { "aria-label": "Next page", onclick: () => tab.next(), disabled: !book && page >= total }, icon("right"))),
     el("span.spacer"),
-    reflow ? el("span.muted.small", {}, "Reflowed text") : el("div.zoom", {},
-      el("button.icon-btn", { "aria-label": "Zoom out (−)", onclick: () => tab.zoom(-1) }, icon("zoomOut")),
-      el("button.zoom-val", { "aria-label": "Zoom options", onclick: (e) => zoomMenu(e.currentTarget, tab) }, `${Math.round(scale * 100)}%`),
-      el("button.icon-btn", { "aria-label": "Zoom in (+)", onclick: () => tab.zoom(1) }, icon("zoomIn"))));
+    book
+      ? el("div.bk-bottom-meta", {},
+          el("span.muted.small.time-left", {}, tab.book?.timeLeft || ""),
+          el("button.btn.sm", { onclick: (e) => appearancePopover(e.currentTarget) }, el("span.aa", {}, "Aa"), el("span", {}, "Text")))
+      : el("div.zoom", {},
+          el("button.icon-btn", { "aria-label": "Zoom out (−)", onclick: () => tab.zoom(-1) }, icon("zoomOut")),
+          el("button.zoom-val", { "aria-label": "Zoom options", onclick: (e) => zoomMenu(e.currentTarget, tab) }, `${Math.round(scale * 100)}%`),
+          el("button.icon-btn", { "aria-label": "Zoom in (+)", onclick: () => tab.zoom(1) }, icon("zoomIn"))));
 }
 
 function zoomMenu(anchor, tab) {
@@ -369,19 +458,19 @@ function renderPanel() {
   const head = el("header.panel-head", {},
     R.panel === "search"
       ? el("strong", {}, "Search")
-      : el("div.seg", { role: "tablist" }, [["contents", "Contents"], ["bookmarks", "Bookmarks"], ["notes", "Notes"]].map(([k, l]) =>
+      : el("div.seg", { role: "tablist" }, [["contents", "Contents"], ["bookmarks", "Marks"], ["notes", "Notes"], ["words", "Words"]].map(([k, l]) =>
           el("button" + (R.panel === k ? ".on" : ""), { role: "tab", "aria-selected": String(R.panel === k), onclick: () => { R.panel = k; renderPanel(); } }, l))),
     el("button.icon-btn", { "aria-label": "Close panel", onclick: () => togglePanel(R.panel) }, icon("x", 18)));
   const body = el("div.panel-body");
   setKids(panel, head, body);
-  ({ contents: renderContents, bookmarks: renderBookmarks, notes: renderNotes, search: renderSearch })[R.panel](body, tab);
+  ({ contents: renderContents, bookmarks: renderBookmarks, notes: renderNotes, search: renderSearch, words: (b, t) => renderWordsHere(b, t, { book: t.mode === "book" ? t.book : null }) })[R.panel](body, tab);
 }
 
 async function renderContents(body, tab) {
   if (tab.state !== "ready") { body.append(el("p.muted.pad", {}, "Open the book to see its contents.")); return; }
   const outline = await tab.outline();
   if (!outline.length) {
-    body.append(el("p.muted.pad", {}, "This PDF has no built-in table of contents. Use bookmarks to mark chapters yourself."));
+    body.append(el("p.muted.pad", {}, tab.kind === "pdf" ? "This PDF has no built-in table of contents. Use bookmarks to mark chapters yourself." : "No chapters were found in this book."));
     return;
   }
   const build = (items, depth = 0) => el("ul.toc" + (depth ? ".sub" : ""), {}, items.map((it) =>
@@ -415,17 +504,18 @@ function renderNotes(body, tab) {
   }
   body.append(
     el("div.row.pad-x", {}, el("span.muted.small", {}, `${list.length} ${list.length === 1 ? "highlight" : "highlights"}`), el("span.spacer"),
-      el("button.link.small", { onclick: () => exportDocNotes(tab.docId) }, "Export Markdown")),
+      el("button.link.small", { onclick: (e) => exportNotesMenu(e.currentTarget, { docIds: [tab.docId], title: tab.doc?.title || "Notes" }) }, "Export…")),
     el("ul.item-list", {}, list.map((a) => el("li.item.note-item", { dataset: { color: a.color } },
       el("button.item-main", { onclick: () => { jumpToAnnotation(tab, a); if (isNarrow()) togglePanel(R.panel); } },
         el("span.item-page", {}, `p. ${a.page}`),
-        el("span.item-quote", {}, a.text),
-        a.note ? el("span.item-note", {}, a.note) : null),
+        el("span.item-quote", {}, a.starred ? el("span.star", { "aria-label": "Starred" }, "★ ") : null, a.text),
+        a.note ? el("span.item-note", {}, a.note) : null,
+        a.tags?.length ? el("span.item-tags", {}, a.tags.map((t) => el("span.tag", {}, "#" + t))) : null),
       el("button.icon-btn", { "aria-label": "Edit note", onclick: () => editAnnotation(a) }, icon("edit", 16))))));
 }
 
 function jumpToAnnotation(tab, a) {
-  if (tab.mode === "reflow") tab.setMode("pdf");
+  if (tab.mode === "book") { tab.goTo(a.page); return; }
   const r = a.rects?.[0];
   if (r && tab.viewer) {
     tab.viewer.scrollPageIntoView({ pageNumber: a.page, destArray: null });
@@ -450,8 +540,8 @@ function renderSearch(body, tab) {
     el("form.search-form", { onsubmit: (e) => { e.preventDefault(); runSearch(tab, input.value); } },
       el("label.search-wrap", {}, icon("search", 18), input),
       el("div.row", {},
-        el("button.icon-btn", { type: "button", "aria-label": "Previous match", onclick: () => tab.find(R.search.query, { again: true, previous: true }) }, icon("left", 18)),
-        el("button.icon-btn", { type: "button", "aria-label": "Next match", onclick: () => tab.find(R.search.query, { again: true }) }, icon("right", 18)),
+        el("button.icon-btn", { type: "button", "aria-label": "Previous match", onclick: () => stepMatch(tab, -1) }, icon("left", 18)),
+        el("button.icon-btn", { type: "button", "aria-label": "Next match", onclick: () => stepMatch(tab, 1) }, icon("right", 18)),
         el("span.find-count.muted.small"))),
     results);
   if (R.search.docId === tab.docId) drawResults(results, tab);
@@ -461,13 +551,13 @@ async function runSearch(tab, query, previous = false) {
   query = query.trim();
   if (!query || tab.state !== "ready") return;
   if (R.search.query === query && R.search.docId === tab.docId && R.search.results.length) {
-    tab.find(query, { again: true, previous });
+    stepMatch(tab, previous ? -1 : 1);
     return;
   }
-  R.search = { query, results: [], docId: tab.docId, running: (R.search.running || 0) + 1, done: false };
+  R.search = { query, results: [], docId: tab.docId, running: (R.search.running || 0) + 1, done: false, index: -1 };
   const run = R.search.running;
-  if (tab.mode === "reflow") tab.setMode("pdf");
-  tab.find(query);
+  if (tab.mode === "book") tab.book?.highlightQuery(query, tab.currentPage());
+  else tab.find(query);
   const box = $(".search-results", R.root);
   const q = query.toLowerCase();
   for (let p = 1; p <= tab.pages; p++) {
@@ -485,16 +575,58 @@ async function runSearch(tab, query, previous = false) {
   if (box?.isConnected) drawResults(box, tab);
 }
 
+/** Next/previous match: Page view uses the PDF's own finder; Book view walks the results. */
+function stepMatch(tab, dir) {
+  if (tab.mode !== "book") { tab.find(R.search.query, { again: true, previous: dir < 0 }); return; }
+  const list = R.search.results;
+  if (!list.length) return;
+  const cur = tab.currentPage();
+  let i = R.search.index;
+  if (i < 0) i = dir > 0 ? list.findIndex((r) => r.page >= cur) : list.length - 1 - [...list].reverse().findIndex((r) => r.page <= cur);
+  else i = (i + dir + list.length) % list.length;
+  if (i < 0 || i >= list.length) i = 0;
+  R.search.index = i;
+  goToMatch(tab, list[i]);
+  $(".find-count", R.root)?.replaceChildren(`${i + 1} of ${list.length}`);
+}
+
+async function goToMatch(tab, r) {
+  if (tab.mode === "book") {
+    await tab.book.goToPage(r.page, { animate: false });
+    tab.book.highlightQuery(R.search.query, r.page);
+  } else {
+    tab.goTo(r.page);
+    tab.find(R.search.query, { highlightAll: true });
+  }
+}
+
 function drawResults(box, tab) {
   const { results, done, query } = R.search;
   setKids(box, 
     el("p.muted.small.pad-x", {}, results.length ? `${results.length}${results.length >= 400 ? "+" : ""} matches${done ? "" : " so far…"}` : done ? `No matches for “${query}”.` : "Searching…"),
     el("ul.item-list", {}, results.slice(0, 400).map((r) =>
       el("li.item", {}, el("button.item-main", { onclick: () => {
-        tab.goTo(r.page);
-        tab.find(query, { highlightAll: true });
+        R.search.index = results.indexOf(r);
+        goToMatch(tab, r);
         if (isNarrow()) togglePanel("search");
       } }, el("span.item-page", {}, `p. ${r.page}`), el("span.item-text", {}, "…" + r.before, el("mark", {}, r.match), r.after + "…"))))));
+}
+
+/** Arriving from a library-wide search: open this book's search on the same words. */
+function pendingFind(tab) {
+  let p;
+  try { p = JSON.parse(sessionStorage.getItem("luma.find") || "null"); } catch {}
+  if (!p || p.docId !== tab.docId) return;
+  sessionStorage.removeItem("luma.find");
+  setTimeout(() => {
+    R.panel = "search";
+    R.search.query = "";
+    renderPanel();
+    renderActions();
+    const input = $(".side-panel .search-input", R.root);
+    if (input) input.value = p.q;
+    runSearch(tab, p.q);
+  }, 400);
 }
 
 // ───────────────────────── features ─────────────────────────
@@ -508,62 +640,29 @@ async function bookmarkCurrent() {
   updateBookmarkButton();
 }
 
-async function toggleReflow() {
-  const tab = activeTab();
-  if (!tab || tab.state !== "ready") return;
-  await tab.setMode(tab.mode === "reflow" ? "pdf" : "reflow");
-  applyReflowStyle();
-}
-
-export function applyReflowStyle() {
-  const s = store.settings();
-  const root = document.documentElement;
-  root.style.setProperty("--reflow-font", REFLOW_FONTS[s.reflowFont]?.stack || REFLOW_FONTS.newsreader.stack);
-  root.style.setProperty("--reflow-size", s.reflowSize + "px");
-  root.style.setProperty("--reflow-leading", s.reflowLeading);
-  root.style.setProperty("--reflow-measure", { narrow: "34em", balanced: "40em", wide: "50em" }[s.reflowWidth] || "40em");
-}
-bus.on("settings", applyReflowStyle);
-bus.on("change", ({ coll }) => coll === "settings" && applyReflowStyle());
-
 function appearancePopover(anchor) {
   closeMenus();
-  const s = store.settings();
+  document.querySelectorAll(".popover").forEach((p) => p.remove());
   const tab = activeTab();
-  const set = (p) => store.setSettings(p);
-  const pop = el("div.menu.popover", { role: "dialog", "aria-label": "Reading appearance" });
-  const seg = (label, key, opts) => el("div.pop-row", {}, el("span.pop-label", {}, label),
-    el("div.seg.small", {}, opts.map(([v, l]) => el("button" + (store.settings()[key] === v ? ".on" : ""), {
-      onclick: (e) => { set({ [key]: v }); e.currentTarget.parentElement.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === e.currentTarget)); },
-    }, l))));
-  const range = (label, key, min, max, step, fmt) => {
-    const out = el("span.pop-val", {}, fmt(s[key]));
-    return el("label.pop-row", {}, el("span.pop-label", {}, label),
-      el("input", { type: "range", min, max, step, value: s[key], oninput: (e) => { const v = Number(e.target.value); out.textContent = fmt(v); set({ [key]: v }); } }), out);
-  };
-  pop.append(
-    seg("Theme", "theme", [["light", "Light"], ["sepia", "Sepia"], ["dark", "Dark"], ["auto", "Auto"]]),
-    el("div.pop-row", {}, el("span.pop-label", {}, "Accent"), el("div.swatches", {}, Object.entries(ACCENTS).map(([k, a]) =>
-      el("button.swatch" + (s.accent === k ? ".on" : ""), { style: { "--c": a.hex }, "aria-label": a.name, title: a.name, onclick: (e) => {
-        set({ accent: k }); pop.querySelectorAll(".swatch").forEach((b) => b.classList.toggle("on", b === e.currentTarget));
-      } })))),
-    el("hr"),
-    el("p.pop-sub", {}, tab?.mode === "reflow" ? "Reflowed text" : "Reflowed text (turn on with the reflow button)"),
-    el("label.pop-row", {}, el("span.pop-label", {}, "Font"),
-      el("select.select", { onchange: (e) => set({ reflowFont: e.target.value }) }, Object.entries(REFLOW_FONTS).map(([k, f]) =>
-        el("option", { value: k, selected: s.reflowFont === k }, f.name)))),
-    range("Size", "reflowSize", 14, 30, 1, (v) => `${v}px`),
-    range("Spacing", "reflowLeading", 1.3, 2.2, 0.05, (v) => v.toFixed(2)),
-    seg("Width", "reflowWidth", [["narrow", "Narrow"], ["balanced", "Balanced"], ["wide", "Wide"]]),
-  );
+  const pop = el("div.menu.popover.typo-pop", { role: "dialog", "aria-label": "Fonts, size and theme" },
+    el("div.pop-title", {}, el("strong", {}, "Reading appearance"),
+      el("button.icon-btn.sm", { "aria-label": "Close", onclick: () => pop.remove() }, icon("x", 16))),
+    typographyControls({
+      preview: tab?.mode !== "book",
+      compact: true,
+      onSwitchToBook: tab?.mode === "book" || tab?.state !== "ready" ? null : () => { pop.remove(); openBookView(); },
+    }));
   document.body.append(pop);
   const r = anchor.getBoundingClientRect();
   const w = pop.offsetWidth;
   if (isNarrow()) pop.classList.add("sheet");
-  else Object.assign(pop.style, { left: Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + "px", top: r.bottom + 6 + "px" });
+  else {
+    const top = r.bottom + 6 + pop.offsetHeight > innerHeight - 8 ? Math.max(8, r.top - pop.offsetHeight - 6) : r.bottom + 6;
+    Object.assign(pop.style, { left: Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + "px", top: top + "px" });
+  }
   requestAnimationFrame(() => pop.classList.add("in"));
   setTimeout(() => document.addEventListener("pointerdown", function out(e) {
-    if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener("pointerdown", out, true); }
+    if (!pop.contains(e.target) && !e.target.closest(".menu")) { pop.remove(); document.removeEventListener("pointerdown", out, true); }
   }, true), 0);
 }
 
@@ -582,39 +681,29 @@ async function toggleCompare() {
     await R.compare.open();
   }
   renderActions();
-  requestAnimationFrame(() => activeTab()?.viewer?.update());
+  requestAnimationFrame(() => { const t = activeTab(); if (t?.mode === "book") t.book?.relayout(); else t?.viewer?.update(); });
 }
 export function restoreCompare() {
   if (localStorage.getItem("luma.compareOpen") && !R.compare) toggleCompare();
 }
 
-async function toggleSpeak() {
+async function toggleListen(from) {
   const tab = activeTab();
-  if (!speech.supported) { toast("This browser can't read aloud."); return; }
-  if (R.speaking) { stopSpeaking(); return; }
+  if (player.active && !from) { player.stop(); renderActions(); return; }
   if (!tab || tab.state !== "ready") return;
-  const page = tab.currentPage();
-  const text = (await tab.text(page)).replace(/-\n/g, "").replace(/\s+/g, " ").trim();
-  if (!text) { toast("There's no text on this page to read."); return; }
-  R.speaking = true;
-  renderActions();
-  speech.say(text, { onend: () => {
-    R.speaking = false;
-    renderActions();
-  } });
-}
-function stopSpeaking() {
-  if (!R.speaking) return;
-  speech.stop();
-  R.speaking = false;
+  let start = from;
+  if (!start) start = tab.mode === "book" ? tab.book.startPoint() || { page: tab.currentPage() } : { page: tab.currentPage() };
+  if (R.auto?.on) R.auto.stop();
+  await player.start(tab, start);
   renderActions();
 }
+bus.on("player-stopped", () => renderActions());
 
-function setFocus(on) {
+function setFocus(on, { quiet = false } = {}) {
   R.focus = on;
   document.documentElement.classList.toggle("focus-mode", on);
-  if (on) toast("Focus mode — press Esc or F to exit", { duration: 2200 });
-  requestAnimationFrame(() => activeTab()?.viewer?.update());
+  if (on && !quiet) toast(isNarrow() ? "Tap the middle of the page to bring the controls back" : "Focus mode — press Esc or F to exit", { duration: 2400 });
+  requestAnimationFrame(() => { const t = activeTab(); if (t?.mode === "book") t.book?.relayout(); else t?.viewer?.update(); });
 }
 
 // ───────────────────── selection & highlights ─────────────────────
@@ -637,11 +726,11 @@ function wireSelection() {
   document.addEventListener("selectionchange", check);
   stage.addEventListener("click", (e) => {
     const tab = activeTab();
-    if (!tab || tab.mode !== "pdf") return;
+    if (!tab) return;
     const sel = document.getSelection();
     if (sel && !sel.isCollapsed) return;
-    const a = highlightAt(tab, e.clientX, e.clientY);
-    if (a) { e.preventDefault(); annotationPopover(a, e.clientX, e.clientY); }
+    const a = tab.mode === "book" ? tab.book?.annotationAt(e.clientX, e.clientY) : highlightAt(tab, e.clientX, e.clientY);
+    if (a) { e.preventDefault(); e.stopPropagation(); hideDefinition(); annotationPopover(a, e.clientX, e.clientY); }
   });
 }
 
@@ -649,23 +738,29 @@ function showSelBar(range, text) {
   hideDefinition();
   const tab = activeTab();
   const inPdf = tab?.mode === "pdf" && range.startContainer.parentElement?.closest(".textLayer");
+  const inBook = tab?.mode === "book" && range.startContainer.parentElement?.closest(".book-text");
+  const make = (r, opts) => (inBook ? createTextHighlight(tab, r, opts) : createHighlight(tab, r, opts));
   const words = text.split(/\s+/).length;
   hideSelBar();
   selBar = el("div.selbar", { role: "toolbar", "aria-label": "Selection actions" });
-  if (inPdf) {
+  if (inPdf || inBook) {
     for (const [k, c] of Object.entries(COLORS)) {
       selBar.append(el("button.selbar-color", { style: { "--c": c.hex }, "aria-label": `Highlight ${c.name.toLowerCase()}`, title: `Highlight ${c.name.toLowerCase()}`,
         onmousedown: (e) => e.preventDefault(),
-        onclick: async () => { const r = range.cloneRange(); hideSelBar(); document.getSelection().removeAllRanges(); await createHighlight(tab, r, { color: k }); } }));
+        onclick: async () => { const r = range.cloneRange(); hideSelBar(); document.getSelection().removeAllRanges(); await make(r, { color: k }); } }));
     }
     selBar.append(el("button.selbar-btn", {
       onmousedown: (e) => e.preventDefault(),
       onclick: async () => {
         const r = range.cloneRange();
         hideSelBar();
-        const note = await noteDialog("Add a note", "", text);
+        const res = await noteDialog("Add a note", "", text);
         document.getSelection().removeAllRanges();
-        if (note != null) { await createHighlight(tab, r, { color: "sun", note: note.trim() }); toast("Note saved"); }
+        if (res != null) {
+          const rec = await make(r, { color: "sun", note: res.note.trim() });
+          if (rec && res.tags.length) await store.patch("annotations", rec.id, { tags: res.tags });
+          toast("Note saved");
+        }
       } }, icon("note", 16), el("span", {}, "Note")));
   }
   if (words <= 3) {
@@ -674,7 +769,7 @@ function showSelBar(range, text) {
       onclick: () => {
         const rect = range.getBoundingClientRect();
         const node = range.startContainer;
-        const page = Number(node.parentElement?.closest(".page")?.dataset.pageNumber || node.parentElement?.closest(".reflow-page")?.dataset.page || tab.currentPage());
+        const page = Number(node.parentElement?.closest(".page")?.dataset.pageNumber || node.parentElement?.closest(".bk-b")?.dataset.page || tab.currentPage());
         hideSelBar();
         showDefinition(text, rect, { docId: tab.docId, title: tab.doc?.title, page, context: node.nodeType === 3 ? contextAround(node, text) : "" }, { sticky: true });
       } }, icon("words", 16), el("span", {}, "Define")));
@@ -682,7 +777,26 @@ function showSelBar(range, text) {
   selBar.append(el("button.selbar-btn", {
     onmousedown: (e) => e.preventDefault(),
     onclick: async () => { await navigator.clipboard?.writeText(text).catch(() => {}); hideSelBar(); toast("Copied"); } }, icon("copy", 16), el("span", {}, "Copy")));
-  if (!inPdf && tab?.mode === "reflow") selBar.append(el("span.selbar-hint", {}, "Highlight in page view"));
+  if (words >= 4) {
+    selBar.append(el("button.selbar-btn", {
+      onmousedown: (e) => e.preventDefault(),
+      onclick: () => {
+        const pg = Number(range.startContainer.parentElement?.closest(".page")?.dataset.pageNumber || range.startContainer.parentElement?.closest(".bk-b")?.dataset.page || tab.currentPage());
+        hideSelBar();
+        quoteCardDialog({ text, title: tab.doc?.title, author: tab.doc?.author, page: pg });
+      } }, icon("image", 16), el("span", {}, "Card")));
+  }
+  if (inBook) {
+    const blockEl = range.startContainer.parentElement?.closest(".bk-b");
+    selBar.append(el("button.selbar-btn", {
+      onmousedown: (e) => e.preventDefault(),
+      onclick: () => {
+        hideSelBar();
+        const offset = blockEl ? range.startOffset : 0;
+        document.getSelection().removeAllRanges();
+        toggleListen(blockEl ? { bid: blockEl.dataset.bid, offset } : { page: tab.currentPage() });
+      } }, icon("headphones", 16), el("span", {}, "Listen from here")));
+  }
   document.body.append(selBar);
   const rects = [...range.getClientRects()].filter((r) => r.width > 0);
   const last = rects[rects.length - 1] || range.getBoundingClientRect();
@@ -697,22 +811,41 @@ function showSelBar(range, text) {
   requestAnimationFrame(() => selBar?.classList.add("in"));
 }
 
-function noteDialog(title, value, quote) {
+function allTags() {
+  const count = new Map();
+  for (const a of store.list("annotations")) for (const t of a.tags || []) count.set(t, (count.get(t) || 0) + 1);
+  return [...count.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+}
+
+const parseTags = (s) => [...new Set(String(s || "").split(/[,#\n]/).map((t) => t.trim().toLowerCase().replace(/\s+/g, "-")).filter(Boolean))].slice(0, 12);
+
+/** Note editor: your thoughts, plus tags. Resolves { note, tags } or null. */
+function noteDialog(title, value, quote, tags = []) {
   return dialog({
     title,
     body: (c, done) => {
       const ta = el("textarea.input", { rows: 5, placeholder: "Your thoughts on this passage" });
       ta.value = value || "";
-      ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) done(ta.value); });
-      c.append(quote ? el("blockquote.quote", {}, quote.length > 280 ? quote.slice(0, 280) + "…" : quote) : "", ta);
+      const tagInput = el("input.input.tag-input", { placeholder: "Tags, e.g. idea, quote, chapter-3", value: tags.join(", "), "aria-label": "Tags" });
+      const save = () => done({ note: ta.value, tags: parseTags(tagInput.value) });
+      ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save(); });
+      const known = allTags().slice(0, 14);
+      c.append(
+        quote ? el("blockquote.quote", {}, quote.length > 280 ? quote.slice(0, 280) + "…" : quote) : "",
+        ta,
+        el("label.field.tags-field", {}, el("span", {}, "Tags"), tagInput),
+        known.length ? el("div.chips.tag-suggest", {}, known.map((t) => el("button.chip.sm", { type: "button", onclick: () => {
+          const cur = parseTags(tagInput.value);
+          if (!cur.includes(t)) tagInput.value = [...cur, t].join(", ");
+        } }, "#" + t))) : null);
     },
-    actions: [{ label: "Cancel", value: null }, { label: "Save note", primary: true, value: (c) => c.querySelector("textarea").value }],
+    actions: [{ label: "Cancel", value: null }, { label: "Save note", primary: true, value: (c) => ({ note: c.querySelector("textarea").value, tags: parseTags(c.querySelector(".tag-input").value) }) }],
   });
 }
 
 export async function editAnnotation(a) {
-  const note = await noteDialog(a.note ? "Edit note" : "Add a note", a.note, a.text);
-  if (note != null) { await store.patch("annotations", a.id, { note: note.trim() }); toast("Note saved"); }
+  const res = await noteDialog(a.note ? "Edit note" : "Add a note", a.note, a.text, a.tags || []);
+  if (res != null) { await store.patch("annotations", a.id, { note: res.note.trim(), tags: res.tags }); toast("Note saved"); }
 }
 
 function annotationPopover(a, x, y) {
@@ -723,6 +856,8 @@ function annotationPopover(a, x, y) {
     { label: a.note ? "Edit note" : "Add a note", icon: "note", onClick: () => editAnnotation(a) },
     ...Object.entries(COLORS).map(([k, c]) => ({ label: c.name, icon: "highlight", checked: a.color === k, onClick: () => store.patch("annotations", a.id, { color: k }) })),
     { label: "Copy text", icon: "copy", onClick: () => navigator.clipboard?.writeText(a.text).then(() => toast("Copied")) },
+    { label: a.starred ? "Unstar" : "Star — add to your commonplace book", icon: "star", onClick: () => store.patch("annotations", a.id, { starred: !a.starred }).then(() => toast(a.starred ? "Unstarred" : "Starred — find it under Notes › Starred")) },
+    { label: "Make a quote card", icon: "image", onClick: () => { const d = store.get("docs", a.docId); quoteCardDialog({ text: a.text, title: d?.title, author: d?.author, page: a.page }); } },
     "-",
     { label: "Delete highlight", icon: "trash", danger: true, onClick: async () => { await store.remove("annotations", a.id); cue("remove"); toast("Highlight deleted"); } },
   ], { align: "start" });
@@ -819,15 +954,20 @@ function wireKeys() {
     if ((e.ctrlKey || e.metaKey) && e.key === "-") { e.preventDefault(); tab.zoom(-1); return; }
     if (e.ctrlKey || e.metaKey) return;
     const k = e.key;
-    if (k === "ArrowRight" || (k === "PageDown" && tab.mode === "reflow")) { e.preventDefault(); tab.next(); }
-    else if (k === "ArrowLeft" || (k === "PageUp" && tab.mode === "reflow")) { e.preventDefault(); tab.prev(); }
+    const book = tab.mode === "book";
+    if (k === "ArrowRight" || (book && (k === "PageDown" || k === " " || k === "ArrowDown"))) { e.preventDefault(); tab.next(); }
+    else if (k === "ArrowLeft" || (book && (k === "PageUp" || k === "ArrowUp"))) { e.preventDefault(); tab.prev(); }
+    else if (k === "l" || k === "L") toggleListen();
+    else if (k === "v" || k === "V") tab.setMode(book ? "pdf" : "book");
     else if (k === "Home" && e.shiftKey) tab.goTo(1);
     else if (k === "End" && e.shiftKey) tab.goTo(tab.pages);
     else if (k === "+" || k === "=") tab.zoom(1);
     else if (k === "-") tab.zoom(-1);
     else if (k === "b" || k === "B") bookmarkCurrent();
     else if (k === "f" || k === "F") setFocus(!R.focus);
-    else if (k === "r" && tab.mode !== "reflow" && e.shiftKey) tab.rotate();
+    else if (k === "R" && !book && e.shiftKey) tab.rotate();
+    else if ((k === "r" || k === "R") && book && !e.shiftKey) toggleRuler();
+    else if (k === "a" || k === "A") toggleAuto();
   });
 }
 

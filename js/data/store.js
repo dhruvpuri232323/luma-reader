@@ -17,11 +17,31 @@ export const DEFAULT_SETTINGS = {
   hoverLookup: true,
   hoverDelay: 450,
   tapLookup: true,
-  reflowFont: "newsreader",
-  reflowSize: 20,
-  reflowLeading: 1.7,
-  reflowWidth: "balanced", // narrow | balanced | wide
+  reflowFont: "literata",
+  reflowSize: 19,
+  reflowLeading: 1.6,
+  reflowWidth: "balanced", // narrow | balanced | wide (text column width in Book view)
+  justify: true,
+  paraStyle: "indent", // indent | spaced
+  bookSpread: "auto", // auto (two pages on wide screens) | single
+  underlineSaved: true,
+  defaultMode: "pdf", // view for books opened for the first time: pdf | book
+  bookLayout: "pages", // pages | scroll
+  pageTurn: "slide", // slide | curl | none
+  ruler: false,
+  warm: "off", // off | night | on
+  warmth: 0.35,
+  recap: true,
+  markHard: false,
   speechRate: 1,
+  wordHighlight: true,
+  characterVoices: true,
+  skipCitations: true,
+  skipCaptions: true,
+  pronunciations: {},
+  reviewReminder: false,
+  reminderHour: 19,
+  dailyGoal: 10,
   autoUploadPdfs: true,
   updatedAt: 0,
 };

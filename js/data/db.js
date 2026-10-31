@@ -2,12 +2,12 @@
 // first; the cloud is a mirror of the synced stores.
 
 const DB_NAME = "luma-reader";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 /** Stores that are mirrored to Firestore (one record = one Firestore doc). */
 export const SYNCED = ["docs", "words", "annotations", "bookmarks", "settings"];
 /** Device-only stores. */
-const LOCAL = ["files", "covers", "defs", "outbox", "kv"];
+const LOCAL = ["files", "covers", "defs", "outbox", "kv", "texts", "freq"];
 
 let dbPromise;
 
