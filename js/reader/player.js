@@ -158,7 +158,7 @@ class Player {
     this.i = Math.max(0, idx);
     this.startI = this.i;
     if (!this.sentences.length) {
-      toast("There's no readable text here. Scanned pages can't be read aloud yet.");
+      toast(tab.ocrJob ? "This scanned book is still being read — it can be read aloud as soon as that's done." : "There's no readable text here.");
       this.stop();
       return;
     }

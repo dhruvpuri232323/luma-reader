@@ -110,3 +110,12 @@ export async function forget(docId) {
   mem.delete(docId);
   await idb.delete("texts", docId).catch(() => {});
 }
+
+/** A book's page texts (if it has been opened on this device), or null. */
+export async function bookPages(docId) {
+  if (mem.has(docId)) return mem.get(docId);
+  const r = await idb.get("texts", docId).catch(() => null);
+  if (!r) return null;
+  mem.set(docId, r.pages || r);
+  return mem.get(docId);
+}

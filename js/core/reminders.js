@@ -17,7 +17,7 @@ function badge() {
 
 export function startReminders() {
   badge();
-  bus.on("change", ({ coll }) => (coll === "words" || coll === "settings") && badge());
+  bus.on("change", ({ coll, rec }) => (coll === "words" || (coll === "settings" && rec?.id === "settings")) && badge());
   setInterval(badge, 20 * 60 * 1000);
   setTimeout(nudge, 5000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { badge(); nudge(); } });

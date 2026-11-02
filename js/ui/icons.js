@@ -70,6 +70,10 @@ const P = {
   pencil: '<path d="M12 20h9"/><path d="M16.4 3.6a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4Z"/>',
   ruler: '<rect x="2" y="8" width="20" height="8" rx="1.5"/><path d="M6 8v3"/><path d="M10 8v4"/><path d="M14 8v3"/><path d="M18 8v4"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>',
+  timer: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 13.5V10"/><path d="M9.5 2.5h5"/><path d="M12 2.5V6"/><path d="m18.5 6.5 1.5-1.5"/>',
+  chart: '<path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/>',
+  trend: '<path d="m3 17 6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+  flame: '<path d="M12 22c4 0 7-2.7 7-7 0-3.5-2.4-6.6-4.3-8.6-.4 2.2-1.6 3.6-2.7 4.1C12.3 7.8 11 4.6 8.6 2.5 8.4 6.5 5 9 5 15c0 4.3 3 7 7 7Z"/>',
 };
 
 export function icon(name, size = 20) {

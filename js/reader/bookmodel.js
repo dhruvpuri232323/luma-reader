@@ -34,7 +34,30 @@ export class BookModel {
     return this.raw.get(p);
   }
 
+  /** Use the text read from a scanned book's pages (see ocr.js) instead of the PDF's own text. */
+  useOcr(pages) {
+    this.ocr = pages;
+    this.raw.clear();
+    this.blocks.clear();
+    this.readyPromise = null;
+  }
+
+  #ocrLines(p) {
+    const pg = this.ocr[p - 1];
+    if (!pg) return { lines: [], w: 612, h: 792 };
+    const { w, h } = pg;
+    const lines = pg.lines.map((l) => {
+      // the line's type size: the taller words span ascender to descender, about the font size
+      // (not the very tallest, so one bracket doesn't make a heading)
+      const hs = l.words.filter((x) => x[4].length > 1).map((x) => x[3]).sort((a, b) => a - b);
+      const size = (hs[Math.min(hs.length - 1, Math.floor(hs.length * 0.85))] || l.h) * h * 1.05;
+      return { x: l.x * w, y: h - (l.y + l.h) * h, size, text: l.words.map((x) => x[4]).join(" "), end: (l.x + l.w) * w };
+    });
+    return { lines: lines.filter((l) => /[\p{L}\p{N}]/u.test(l.text)), w, h };
+  }
+
   async #readLines(p) {
+    if (this.ocr) return this.#ocrLines(p);
     const page = await this.pdf.getPage(p);
     const vp = page.getViewport({ scale: 1 });
     const tc = await page.getTextContent();

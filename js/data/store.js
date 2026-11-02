@@ -27,7 +27,12 @@ export const DEFAULT_SETTINGS = {
   underlineSaved: true,
   defaultMode: "pdf", // view for books opened for the first time: pdf | book
   bookLayout: "pages", // pages | scroll
-  pageTurn: "slide", // slide | curl | none
+  pageTurn: "slide", // slide | curl | none (older single setting; the Modern edition still follows it)
+  bookFeel: "auto", // edition for books you haven't set up: auto (match the book) | modern | paperback | hardcover | pocket | antique | magazine | ereader
+  pageSounds: true, // page-turn sounds (each book can still turn its own off)
+  trackReading: true, // measure reading time, pages and pace (for the timer and Insights)
+  readScans: true, // read scanned PDFs with on-device text recognition
+  readGoal: 20, // minutes a day
   ruler: false,
   warm: "off", // off | night | on
   warmth: 0.35,

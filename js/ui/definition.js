@@ -1,9 +1,16 @@
 // The dictionary card: shown on hover/tap in the reader. Falls back from the
 // dictionary to Wiktionary, WordNet and Wikipedia; if nothing knows the word it
-// offers close spellings, a Google search and a box to add your own meaning.
+// offers close spellings, an in-app look-up (Wikipedia, your books, the web)
+// and a box to add your own meaning.
 import { el, isNarrow, bus, setKids } from "../core/util.js";
 import { store } from "../data/store.js";
-import { lookup, saveWord, wordId, normalizeWord, googleUrl } from "../data/dictionary.js";
+import { lookup, saveWord, wordId, normalizeWord } from "../data/dictionary.js";
+import { openResearch } from "./research.js";
+import { storyInCard, tappable } from "./wordstory.js";
+import { phraseBody, fullFormBlock, factsTable } from "./phrasecard.js";
+import { wikiFacts } from "../data/wiki.js";
+import { isPhrase } from "../data/phrases.js";
+import { isAbbreviation } from "../data/abbrev.js";
 import { cue } from "../core/feel.js";
 import { speakOnce } from "../core/voice.js";
 import { icon } from "./icons.js";
@@ -62,6 +69,8 @@ export async function showDefinition(word, anchorRect, source, { sticky = false,
   position(anchorRect);
   requestAnimationFrame(() => card?.classList.add("in"));
 
+  if (source?.docId) bus.emit("lookup", { docId: source.docId, page: source.page, word: phrase || w });
+  if (!phrase && isPhrase(word)) { renderPhrase(); position(anchorRect); return; }
   const res = await lookup(word, { phrase });
   if (my !== seq || !card) return;
   render(res);
@@ -88,10 +97,37 @@ function renderLoading(w) {
     el("div.def-skel", {}, el("span"), el("span"), el("span.short")));
 }
 
+/** Look up another word inside the card (a word you didn't know in a definition). */
+async function goTo(word, { back = false } = {}) {
+  if (!card || !current) return;
+  const w = normalizeWord(word);
+  if (!w || w.length < 2 || w === current.word) return;
+  const trail = current.trail || [];
+  if (!back) trail.push({ word: current.word, raw: current.raw, phrase: current.phrase });
+  const my = ++seq;
+  current = { ...current, key: w, word: w, raw: word, phrase: null, trail };
+  card.classList.add("sticky");
+  renderLoading(w);
+  if (isPhrase(word)) { renderPhrase(); position(current.anchorRect); return; }
+  const res = await lookup(word);
+  if (my !== seq || !card) return;
+  render(res);
+  position(current.anchorRect);
+}
+function goBack() {
+  const prev = current?.trail?.pop();
+  if (prev) goTo(prev.raw || prev.word, { back: true });
+}
+
 function render(res) {
   const { word: w, raw, source } = current;
+  const my = seq;
+  const onWord = (x) => goTo(x);
   const entry = res.entry;
-  const headword = entry?.word || w;
+  const abbr = isAbbreviation(raw);
+  const headword = abbr ? String(raw).trim() : entry?.word || w;
+  const onArticle = (title) => { hideDefinition(); openResearch(title, { source, article: title }); };
+  const fullBox = (onFound) => abbr ? fullFormBlock(String(raw).trim(), { docId: source?.docId, onWord, onArticle, alive: () => card && seq === my, onFound }) : null;
   const id = wordId(entry?.source === "wikipedia" ? headword : headword);
   const saved = store.get("words", id) || store.get("words", wordId(w));
   const rerender = () => card && render(res);
@@ -118,7 +154,9 @@ function render(res) {
 
   const speak = el("button.icon-btn", { "aria-label": "Pronounce", title: "Pronounce", onclick: () => playWord(headword, entry?.audio) }, icon("speak", 18));
 
+  const prev = current.trail?.[current.trail.length - 1];
   const head = el("div.def-head", {},
+    prev ? el("button.icon-btn.def-back", { "aria-label": `Back to “${prev.word}”`, title: `Back to “${prev.word}”`, onclick: goBack }, icon("back", 18)) : null,
     entry?.thumb ? el("img.def-thumb", { src: entry.thumb, alt: "", referrerpolicy: "no-referrer" }) : null,
     el("div.def-title", {},
       el("h3.def-word", {}, headword),
@@ -126,41 +164,52 @@ function render(res) {
     el("div.def-actions", {}, speak, saveBtn,
       el("button.icon-btn.def-close", { "aria-label": "Close", onclick: hideDefinition }, icon("x", 18))));
 
-  const google = el("a.def-google", { href: googleUrl(entry?.source === "wikipedia" ? headword : raw || w), target: "_blank", rel: "noopener" },
-    el("span.g-logo", { "aria-hidden": "true" }), el("span", {}, "Search Google"));
+  // look further without leaving the app: Wikipedia, your books, and Google one tap on
+  const lookFurther = (article) => { const q = entry?.source === "wikipedia" ? headword : (raw || w).trim(); hideDefinition(); openResearch(q, { source, article }); };
+  const google = el("button.def-google", { type: "button", title: "Wikipedia, your books and notes, and the web — without leaving Luma", onclick: () => lookFurther(null) },
+    icon("search", 15), el("span", {}, "Look it up"));
 
   let body;
   if (res.status === "ok") {
     const isWiki = entry.source === "wikipedia";
-    const baseForm = !isWiki && entry.word && entry.word.toLowerCase() !== w;
+    const story = el("div.def-story");
+    const factsSlot = el("div");
+    if (isWiki) wikiFacts(headword).then((f) => { if (card && seq === my && f?.facts?.length) { factsSlot.replaceWith(el("div.ph-factbox", {}, el("p.ph-sub", {}, "Key facts"), factsTable(f.facts, { limit: 5 }))); position(current.anchorRect); } }).catch(() => {});
+    let hasFull = false;
     body = el("div.def-body", {},
-      baseForm ? el("p.def-base.muted.small", {}, `“${w}” is a form of “${entry.word}”`) : null,
+      fullBox((list) => { if (list.length) { hasFull = true; story.remove(); } }),
+      story,
       saved?.customDef ? el("div.def-mine", {}, el("strong", {}, "Your definition"), el("p", {}, saved.customDef)) : null,
       isWiki
         ? el("section.def-sense", {},
             el("p.def-pos", {}, entry.meanings[0].pos),
-            el("p.def-extract", {}, entry.meanings[0].defs[0].d))
+            el("p.def-extract", {}, tappable(entry.meanings[0].defs[0].d, onWord)),
+            factsSlot)
         : entry.meanings.slice(0, 4).map((m) =>
             el("section.def-sense", {},
               m.pos ? el("p.def-pos", {}, m.pos) : null,
-              el("ol", {}, m.defs.slice(0, 3).map((d) => el("li", {}, d.d, d.ex ? el("q.def-ex", {}, d.ex) : null))),
+              el("ol", {}, m.defs.slice(0, 3).map((d) => el("li", {}, tappable(d.d, onWord), d.ex ? el("q.def-ex", {}, d.ex) : null))),
               m.synonyms?.length ? el("p.def-rel", {}, el("span", {}, "Similar"), " ", m.synonyms.slice(0, 6).join(", ")) : null,
               m.antonyms?.length ? el("p.def-rel", {}, el("span", {}, "Opposite"), " ", m.antonyms.slice(0, 4).join(", ")) : null)),
       entry.wiki ? el("details.def-wiki", {},
         el("summary", {}, `Also: ${entry.wiki.title} on Wikipedia`),
-        el("p", {}, entry.wiki.extract)) : null);
+        el("p", {}, entry.wiki.extract),
+        el("button.link.small", { type: "button", onclick: () => { hideDefinition(); openResearch(entry.wiki.title, { source, article: entry.wiki.title }); } }, "Read the article")) : null);
     const foot = el("div.def-foot", {},
       el("span.def-src", {}, `From ${SOURCE_LABEL[entry.source] || "dictionary"}`, res.cached ? " · works offline" : ""),
-      entry.sourceUrl ? el("a.def-more", { href: entry.sourceUrl, target: "_blank", rel: "noopener" }, "Read more") : null,
+      isWiki
+        ? el("button.def-more", { type: "button", onclick: () => lookFurther(headword) }, "Read the article")
+        : entry.sourceUrl ? el("a.def-more", { href: entry.sourceUrl, target: "_blank", rel: "noopener" }, "Read more") : null,
       el("span.spacer"), google);
     setKids(card, head, body, foot);
+    if (!isWiki && !hasFull) storyInCard(story, w, { entry, onWord, onStory: () => { hideDefinition(); openResearch(w, { source, story: w }); }, alive: () => card && seq === my }).then(() => card && seq === my && position(current.anchorRect)).catch((e) => console.warn("Word story:", e));
   } else {
     const msg = {
       missing: `“${w}” isn't in the dictionaries yet.`,
       offline: `You're offline and “${w}” hasn't been looked up on this device before.`,
       error: "The dictionaries didn't respond. Try again in a moment.",
     }[res.status];
-    const ta = el("textarea.input", { rows: 2, placeholder: "Write the meaning in your own words (or paste it from Google)" });
+    const ta = el("textarea.input", { rows: 2, placeholder: "Write the meaning in your own words (or paste one you found)" });
     if (saved?.customDef) ta.value = saved.customDef;
     const own = el("form.def-own", {
       onsubmit: async (e) => {
@@ -173,8 +222,12 @@ function render(res) {
         rerender();
       },
     }, ta, el("button.btn.sm.primary", { type: "submit" }, icon("plus", 16), el("span", {}, saved ? "Update meaning" : "Add word")));
+    const story = el("div.def-story");
+    const msgEl = el("p.muted", {}, msg);
     body = el("div.def-body", {},
-      saved?.customDef ? el("div.def-mine", {}, el("strong", {}, "Your definition"), el("p", {}, saved.customDef)) : el("p.muted", {}, msg),
+      fullBox((list) => { if (list.length) { msgEl.remove(); story.remove(); } }),
+      story,
+      saved?.customDef ? el("div.def-mine", {}, el("strong", {}, "Your definition"), el("p", {}, saved.customDef)) : msgEl,
       !saved && res.suggestions?.length ? el("p.def-sugg", {}, "Did you mean ",
         res.suggestions.map((sug, i) => [i ? ", " : "", el("button.link", {
           onclick: () => { const r = current.anchorRect, s = current.source; hideDefinition(); showDefinition(sug, r, s, { sticky: true }); },
@@ -183,7 +236,53 @@ function render(res) {
       own);
     setKids(card, head, body);
     card.classList.add("sticky"); // stays open while you type
+    // even an unknown word can often be worked out from its parts
+    storyInCard(story, w, { entry: null, onWord, onStory: () => { hideDefinition(); openResearch(w, { source, story: w }); }, alive: () => card && seq === my })
+      .then((explained) => { if (explained && res.status === "missing") msgEl.remove(); if (card && seq === my) position(current.anchorRect); }).catch(() => {});
   }
+}
+
+/** Several words at once: the phrase, each word, and what Wikipedia says. */
+function renderPhrase() {
+  const { raw, source } = current;
+  const text = String(raw).replace(/\s+/g, " ").trim();
+  const my = seq;
+  const onWord = (x) => goTo(x);
+  const onArticle = (title) => { hideDefinition(); openResearch(title, { source, article: title }); };
+  const body = phraseBody(text, { docId: source?.docId, onWord, onArticle, alive: () => card && seq === my });
+  const id = wordId(text);
+  const saved = store.get("words", id);
+  const saveBtn = el("button.def-save" + (saved ? ".on" : ""), {
+    "aria-label": saved ? "Saved" : "Save phrase", title: saved ? "In your words" : "Save to your words, with its meaning",
+    onclick: async () => {
+      if (store.get("words", id)) { toast("Already in your words"); return; }
+      const meaning = body.summary();
+      const entry = { word: text, asked: text, phonetic: "", audio: "", source: "phrase", sourceUrl: "", meanings: [{ pos: "phrase", defs: [{ d: meaning || text, ex: "" }], synonyms: [], antonyms: [] }] };
+      const rec = await saveWord({ word: text, entry, source });
+      cue("save");
+      toast(`Saved “${rec.word}”`);
+      saveBtn.classList.add("on");
+      setKids(saveBtn, icon("bookmarkOn", 17), el("span", {}, "Saved"));
+    },
+  }, icon(saved ? "bookmarkOn" : "bookmark", 17), el("span", {}, saved ? "Saved" : "Save"));
+  const prev = current.trail?.[current.trail.length - 1];
+  const head = el("div.def-head", {},
+    prev ? el("button.icon-btn.def-back", { "aria-label": `Back to “${prev.word}”`, title: `Back to “${prev.word}”`, onclick: goBack }, icon("back", 18)) : null,
+    el("div.def-title", {}, el("h3.def-word.def-phrase", {}, text)),
+    el("div.def-actions", {},
+      el("button.icon-btn", { "aria-label": "Pronounce", title: "Pronounce", onclick: () => speakOnce(text) }, icon("speak", 18)),
+      saveBtn,
+      el("button.icon-btn.def-close", { "aria-label": "Close", onclick: hideDefinition }, icon("x", 18))));
+  const foot = el("div.def-foot", {},
+    el("span.def-src", {}, "Dictionary · Wikipedia"),
+    el("span.spacer"),
+    el("button.def-google", { type: "button", title: "Wikipedia, your books and notes, and the web — without leaving Luma", onclick: () => { hideDefinition(); openResearch(text, { source }); } },
+      icon("search", 15), el("span", {}, "Look it up")));
+  setKids(card, head, el("div.def-body", {}, body), foot);
+  card.classList.add("sticky");
+  // the card grows as answers arrive: keep it on screen
+  const ro = new ResizeObserver(() => { if (card && seq === my) position(current.anchorRect); else ro.disconnect(); });
+  ro.observe(card);
 }
 
 export function playWord(word, audioUrl) {

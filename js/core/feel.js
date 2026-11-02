@@ -27,11 +27,26 @@ export function resolvedTheme(s = store.settings()) {
   return s.theme === "auto" ? (darkQuery.matches ? "dark" : "light") : s.theme;
 }
 
+// The light switch: one tap on the logo moves to the next of these.
+export const MODES = [
+  { id: "light", name: "Light", theme: "light", warm: "off", note: "Bright paper, for daytime" },
+  { id: "sepia", name: "Sepia", theme: "sepia", warm: "off", note: "Warm paper, easy on the eyes" },
+  { id: "dark", name: "Dark", theme: "dark", warm: "off", note: "Light text on a dark page" },
+  { id: "night", name: "Night light", theme: "dark", warm: "on", note: "Dark with a warm amber glow, for late at night" },
+  { id: "auto", name: "Auto", theme: "auto", warm: "night", note: "Follows your device; night light after 8 pm" },
+];
+export function currentMode(s = store.settings()) {
+  if (s.theme === "auto") return "auto";
+  if (s.theme === "dark" && s.warm === "on") return "night";
+  return MODES.some((m) => m.id === s.theme) ? s.theme : "light";
+}
+
 export function applyAppearance() {
   const s = store.settings();
   const root = document.documentElement;
   const theme = resolvedTheme(s);
   root.dataset.theme = theme;
+  root.dataset.mode = currentMode(s);
   root.dataset.accent = s.accent;
   root.dataset.motion = s.reduceMotion || motionQuery.matches ? "reduce" : "full";
   const h = new Date().getHours();
@@ -46,7 +61,7 @@ darkQuery.addEventListener("change", applyAppearance);
 setInterval(() => { if (store.settings().warm === "night") applyAppearance(); }, 5 * 60 * 1000);
 motionQuery.addEventListener("change", applyAppearance);
 bus.on("settings", applyAppearance);
-bus.on("change", ({ coll, source }) => { if (coll === "settings" && source === "remote") applyAppearance(); });
+bus.on("change", ({ coll, rec, source }) => { if (coll === "settings" && rec?.id === "settings" && source === "remote") applyAppearance(); });
 
 // ── Sound: short sine "glints", generated so there are no audio files ──
 let ctx;

@@ -5,6 +5,8 @@ import { schedule, isDue, wordId, lookup, saveWord } from "../data/dictionary.js
 import { icon } from "./icons.js";
 import { toast, dialog, confirmDialog, menu, promptDialog } from "./overlay.js";
 import { playWord } from "./definition.js";
+import { openResearch } from "./research.js";
+import { storyInCard } from "./wordstory.js";
 import { cue } from "../core/feel.js";
 import { navigate } from "./router.js";
 import { practice, MODES, practiceLog, bump } from "./practice.js";
@@ -125,7 +127,15 @@ function wordRow(w) {
 
 function wordDetail(w, doc) {
   const src = w.source;
+  const story = el("div.def-story.word-story");
+  storyInCard(story, w.word, {
+    entry: { word: w.word, meanings: w.meanings || [] },
+    onWord: (x) => openResearch(x, { story: x }),
+    onStory: () => openResearch(w.word, { story: w.word }),
+    alive: () => true,
+  }).catch(() => {});
   return el("div.word-detail", {},
+    story,
     w.customDef ? el("div.def-mine", {}, el("strong", {}, "Your definition"), el("p", {}, w.customDef)) : null,
     w.mnemonic ? el("div.def-mine.trick", {}, el("strong", {}, "Memory trick"), el("p", {}, w.mnemonic)) : null,
     (w.meanings || []).slice(0, 4).map((m) => el("section.def-sense", {},
@@ -141,7 +151,9 @@ function wordDetail(w, doc) {
         : src?.title ? `From “${src.title}”, page ${src.page}` : "Added by hand",
       ` · saved ${relTime(w.createdAt)}`,
       w.srs?.reps ? ` · next review ${w.srs.due <= Date.now() ? "today" : new Date(w.srs.due).toLocaleDateString(undefined, { day: "numeric", month: "short" })}` : ""),
-    el("div.row", {}, el("button.btn.sm", { onclick: () => editWord(w.id) }, icon("edit", 16), el("span", {}, "Edit"))));
+    el("div.row", {},
+      el("button.btn.sm", { onclick: () => editWord(w.id) }, icon("edit", 16), el("span", {}, "Edit")),
+      el("button.btn.sm", { title: "Wikipedia, your books and the web — without leaving Luma", onclick: () => openResearch(w.word, { article: w.origin === "wikipedia" ? w.word : null }) }, icon("globe", 16), el("span", {}, "Look it up"))));
 }
 
 /** Where else this word turns up in your library. */
@@ -262,6 +274,7 @@ function flashcards(words, mode) {
             if (g === 0) deck.push(w);
             reviewed++;
             bump();
+            bus.emit("word-review", { id: w.id, correct: g > 0 });
             i++; flipped = false; cue("flip"); draw();
           };
           const label = (g) => { const s = schedule(w.srs, g); return s.interval ? `${s.interval}d` : "10m"; };

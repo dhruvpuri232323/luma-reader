@@ -10,6 +10,7 @@ import { icon } from "./icons.js";
 import { toast, confirmDialog, dialog } from "./overlay.js";
 import { installState, promptInstall } from "../core/pwa.js";
 import { typographyControls } from "./typography.js";
+import { EDITIONS } from "../core/bookfeel.js";
 import * as voice from "../core/voice.js";
 import { drive } from "../sync/drive.js";
 import { pronunciationsDialog } from "../reader/player.js";
@@ -22,7 +23,7 @@ export function mountSettings(container) {
   root = container;
   const rerender = debounce(() => root.closest(".view")?.classList.contains("active") && render(), 100);
   ["account", "sync-status", "sync-pending", "install", "voice-state", "voice-prefs", "drive"].forEach((e) => bus.on(e, rerender));
-  bus.on("change", ({ coll, source }) => coll === "settings" && source === "remote" && rerender());
+  bus.on("change", ({ coll, rec, source }) => coll === "settings" && rec?.id === "settings" && source === "remote" && rerender());
   voice.voicesReady().then(rerender);
 }
 export function settingsShown(query = {}) {
@@ -60,7 +61,16 @@ function pages() {
     ["reading", "Reading", "openBook", () => section("Reading", "How books look in Book view. Changes show in the preview straight away.",
       el("div.set-typo", {}, typographyControls({ preview: true })),
       row("Open new PDFs in", "You can switch any PDF between Page and Book view from the reader's top bar. EPUBs and articles always open as a book.", seg("defaultMode", [["pdf", "Page view"], ["book", "Book view"]])),
+      row("Default book feel", "For every book you haven't set up yourself. Any book can be a hardcover, paperback, antique… with its own page turns, sound, paper and light — use the ✦ button at the bottom of the reader.",
+        el("select.select", { "aria-label": "Default book feel", onchange: (e) => store.setSettings({ bookFeel: e.target.value }) },
+          [["auto", "Match the book (EPUBs as paperbacks, web articles as magazines)"], ...Object.entries(EDITIONS).map(([k, E]) => [k, `${E.name} — ${E.note.toLowerCase()}`])]
+            .map(([v, l]) => el("option", { value: v, selected: (s.bookFeel || "auto") === v }, l)))),
+      toggle("pageSounds", "Page-turn sounds", "The rustle of each book's paper as you turn a page (each book can still turn its own off)"),
       toggle("recap", "“Where was I?” reminder", "When you come back to a book after a while, show the chapter, your last lines and latest note"),
+      toggle("trackReading", "Measure my reading", "Reading time, pages and pace for the timer and Insights — counted only while a book is open and you're reading"),
+      toggle("readScans", "Read scanned books", "When a PDF is only pictures of pages, Luma reads every page on this device (once) so you can look up words, listen and search"),
+      row("Daily reading goal", "Shown on the timer in the reader and in Insights", el("select.select", { "aria-label": "Daily reading goal", onchange: (e) => store.setSettings({ readGoal: Number(e.target.value) }) },
+        [10, 15, 20, 30, 45, 60, 90].map((m) => el("option", { value: m, selected: m === (Number(s.readGoal) || 20) }, `${m} minutes`)))),
       row("Save articles from your browser", "A “Save to Luma” button for your bookmarks bar", el("button.btn.sm", { onclick: () => bookmarkletDialog() }, icon("globe", 16), el("span", {}, "Get the button"))))],
     ["listening", "Listening", "headphones", voiceSection],
     ["words", "Learning words", "words", () => section("Learning words", "Help with the words you don't know yet.",
@@ -85,7 +95,7 @@ function pages() {
     ["install", "Install app", "download", installSection],
     ["data", "Your data", "file", dataSection],
     ["keys", "Keyboard shortcuts", "type", () => section("Keyboard shortcuts", "Faster with a keyboard.",
-      el("dl.keys", {}, [["← →", "Previous / next page"], ["Space", "Next page in Book view · flip a flashcard"], ["V", "Switch Page / Book view"], ["L", "Listen / stop"], ["Space", "Pause / play while listening"], ["Shift ← →", "Previous / next sentence while listening"], ["A", "Auto-scroll at your reading speed"], ["R", "Reading ruler (Book view)"], ["Ctrl F", "Search in book"], ["B", "Bookmark page"], ["F", "Focus mode"], ["+ −", "Zoom (Page view)"], ["Shift R", "Rotate pages"], ["Esc", "Close pop-ups"]]
+      el("dl.keys", {}, [["← →", "Previous / next page"], ["Space", "Next page in Book view · flip a flashcard"], ["V", "Switch Page / Book view"], ["L", "Listen / stop"], ["Space", "Pause / play while listening"], ["Shift ← →", "Previous / next sentence while listening"], ["A", "Auto-scroll at your reading speed"], ["R", "Reading ruler (Book view)"], ["Ctrl F", "Search in book"], ["K", "Look up the selected words — Wikipedia, your books, the web"], ["B", "Bookmark page"], ["F", "Focus mode"], ["+ −", "Zoom (Page view)"], ["Shift R", "Rotate pages"], ["Esc", "Close pop-ups"]]
         .map(([k, d]) => [el("dt", {}, el("kbd", {}, k)), el("dd", {}, d)])),
       el("p.muted.small.about", {}, "Luma Reader · free, no ads, no account needed · PDFs read on your device with PDF.js · natural voices by Kokoro, on your device · definitions from the Free Dictionary API, Wiktionary, WordNet (Datamuse) and Wikipedia · articles via Jina Reader"))],
   ].filter(Boolean);

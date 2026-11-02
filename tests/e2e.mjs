@@ -1,4 +1,5 @@
 // End-to-end test of Luma Reader in real Chromium (laptop + phone viewports):
+// (scanned.pdf is three pages of novel.pdf saved as pictures only — tests reading scanned books)
 // Page view, Book view, typography, dictionary fallbacks, highlights, listening
 // (device voice and the natural-voice pipeline with a stand-in model), words,
 // notes, settings, and two-device sync through an in-memory stand-in for Firestore.
@@ -25,6 +26,15 @@ let failures = 0;
 const ok = (cond, msg) => { console.log(`${cond ? "✓" : "✗"} ${msg}`); if (!cond) failures++; };
 const shot = (page, name) => page.screenshot({ path: join(OUT, name + ".png") });
 const within = (p, ms = 6000) => p.then(() => true, () => false);
+/** Wait until an async check in the page is true (Playwright's waitForFunction doesn't await promises). */
+async function until(pg, fn, arg = null, { timeout = 8000 } = {}) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    if (await pg.evaluate(fn, arg).catch(() => false)) return true;
+    await pg.waitForTimeout(200);
+  }
+  throw new Error("timed out");
+}
 
 // ── stand-ins for the web services ──
 const NOT_IN_DICTIONARY = new Set(["sesquipedalian", "lamplighter"]);
@@ -43,18 +53,34 @@ When we read slowly we notice the hinges of an argument, the places where a writ
 ## A practice
 
 Choose one page a day and read it twice: once for the sense, and once for the sound.`;
+const NOUNS = new Set(["human", "bucket"]);
 const dictionary = (w) => [{
   word: w, phonetic: `/${w}/`, phonetics: [{ text: `/${w}/` }],
-  meanings: [{ partOfSpeech: "adjective", definitions: [{ definition: `Test meaning of ${w}.`, example: `A ${w} example.`, synonyms: ["bright"], antonyms: [] }], synonyms: ["radiant"], antonyms: ["dim"] }],
+  meanings: [{ partOfSpeech: NOUNS.has(w) ? "noun" : "adjective", definitions: [{ definition: `Test meaning of ${w}.`, example: `A ${w} example.`, synonyms: ["bright"], antonyms: [] }], synonyms: ["radiant"], antonyms: ["dim"] }],
 }];
+// Wiktionary's pages (Parsoid HTML), trimmed to what the word stories read
+const wkPage = (ety) => `<html><body><section data-mw-section-id="1"><h2 id="English">English</h2><section data-mw-section-id="2"><h3 id="Etymology">Etymology</h3><p>${ety}</p></section><section><h3 id="Adjective">Adjective</h3><p>…</p></section></section></body></html>`;
+const WIKTIONARY_HTML = {
+  fastest: wkPage(`From <i class="Latn mention" lang="en"><a href="./fast">fast</a></i> +&lrm; <i class="Latn mention" lang="en"><a href="./-est">-est</a></i>.`),
+  fast: wkPage(`From Middle English <i class="Latn mention">fast</i>, from Old English <i class="Latn mention">fæst</i> (“firm, secure”), from Proto-Germanic <i class="Latn mention">*fastuz</i>.`),
+  elegant: wkPage(`From Middle French <i class="Latn mention" lang="frm">élégant</i>, from Latin <i class="Latn mention" lang="la">ēlegāns</i> (“choice, fine, tasteful”), from <i class="Latn mention" lang="la">ēligō</i> (“pick out, choose”).`),
+};
 async function routeServices(ctx) {
   await ctx.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
   await ctx.route(/api\.dictionaryapi\.dev/, (r) => {
     const w = decodeURIComponent(r.request().url().split("/").pop());
-    if (NOT_IN_DICTIONARY.has(w)) return r.fulfill({ status: 404, contentType: "application/json", body: "{}" });
+    if (NOT_IN_DICTIONARY.has(w) || /\s/.test(w)) return r.fulfill({ status: 404, contentType: "application/json", body: "{}" });
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(dictionary(w)) });
   });
   await ctx.route(/en\.wiktionary\.org/, (r) => {
+    const html = /\/page\/html\/([^/?#]+)/.exec(r.request().url());
+    if (html) {
+      const body = WIKTIONARY_HTML[decodeURIComponent(html[1])];
+      return r.fulfill(body ? { status: 200, headers: { "Access-Control-Allow-Origin": "*" }, contentType: "text/html", body } : { status: 404, headers: { "Access-Control-Allow-Origin": "*" }, body: "" });
+    }
+    if (/definition\/kick_the_bucket/.test(r.request().url())) {
+      return r.fulfill({ status: 200, headers: { "Access-Control-Allow-Origin": "*" }, contentType: "application/json", body: JSON.stringify({ en: [{ partOfSpeech: "Verb", language: "English", definitions: [{ definition: "(<i>idiomatic</i>, <i>euphemistic</i>) To die.", examples: ["The old man finally <b>kicked the bucket</b>."] }] }] }) });
+    }
     if (/sesquipedalian/.test(r.request().url())) {
       return r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
         en: [{ partOfSpeech: "Adjective", language: "English", definitions: [{ definition: "<b>Given</b> to the use of long words.", examples: ["a <i>sesquipedalian</i> lecturer"] }] }],
@@ -62,7 +88,42 @@ async function routeServices(ctx) {
     }
     r.fulfill({ status: 404, body: "{}" });
   });
+  await ctx.route(/upload\.wikimedia\.org/, (r) => r.fulfill({ status: 200, contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64") }));
   await ctx.route(/en\.wikipedia\.org/, (r) => {
+    const url = new URL(r.request().url());
+    if (url.pathname.startsWith("/api/rest_v1/page/media-list/")) {
+      return r.fulfill({ status: 200, headers: { "Access-Control-Allow-Origin": "*" }, contentType: "application/json", body: JSON.stringify({ items: [1, 2, 3].map((i) => ({ type: "image", title: `File:Lamp${i}.jpg`, showInGallery: true, caption: { text: `A gas lamp, picture ${i}` }, srcset: [{ src: `//upload.wikimedia.org/lamp${i}-320.png`, scale: "1x" }, { src: `//upload.wikimedia.org/lamp${i}-640.png`, scale: "2x" }] })) }) });
+    }
+    if (url.pathname === "/w/api.php") {
+      const json = (o) => r.fulfill({ status: 200, headers: { "Access-Control-Allow-Origin": "*" }, contentType: "application/json", body: JSON.stringify(o) });
+      const gsr = url.searchParams.get("gsrsearch") || "";
+      if (url.searchParams.get("action") === "parse") {
+        return json(/lamplighter/i.test(url.searchParams.get("page")) ? { parse: { title: "Lamplighter", text: `<div class="mw-parser-output"><table class="infobox"><tbody><tr><th colspan="2" class="infobox-above">Lamplighter</th></tr><tr><th class="infobox-label">Occupation type</th><td class="infobox-data">Street work<sup class="reference">[1]</sup></td></tr><tr><th class="infobox-label">Activity sectors</th><td class="infobox-data">Public lighting<br>Local government</td></tr><tr><th class="infobox-label">Related jobs</th><td class="infobox-data">Watchman</td></tr></tbody></table><p>A lamplighter…</p></div>` } } : { error: { code: "missingtitle" } });
+      }
+      if (/^morelike:/.test(gsr)) return json({ query: { pages: [{ pageid: 7, index: 1, title: "Gas lighting", description: "Light from burning gas" }, { pageid: 8, index: 2, title: "Street light", description: "Raised source of light on the edge of a road" }] } });
+      if (/fastest human/i.test(gsr)) {
+        return json({ query: { pages: [
+          { pageid: 11, index: 1, title: "Footspeed", description: "Maximum speed a human can move on foot", extract: "Footspeed, or sprint speed, is the maximum speed at which a human can move on foot." },
+          { pageid: 12, index: 2, title: "Usain Bolt", description: "Jamaican sprinter (born 1986)", extract: "Usain Bolt is a Jamaican retired sprinter." }] } });
+      }
+      if (url.searchParams.get("titles") === "Footspeed") {
+        return json({ query: { pages: [{ pageid: 11, title: "Footspeed", description: "Maximum speed a human can move on foot", fullurl: "https://en.wikipedia.org/wiki/Footspeed",
+          extract: "Footspeed, or sprint speed, is the maximum speed at which a human can move on foot.\n== Fastest humans ==\nThe fastest human footspeed on record is 44.72 km/h (27.78 mph), seen during a 100-metre sprint by Usain Bolt. His average speed was lower.\n== Animals ==\nThe cheetah is the fastest land animal." }] } });
+      }
+      if (url.searchParams.get("generator") === "search") {
+        return json({ query: { pages: [
+          { pageid: 2, index: 2, title: "The Lamplighter (novel)", description: "1854 novel by Maria Cummins", extract: "The Lamplighter is a novel by Maria Susanna Cummins." },
+          { pageid: 1, index: 1, title: "Lamplighter", description: "Person employed to light street lamps", extract: "A lamplighter was a person employed to light street lights. They also put them out at dawn.", thumbnail: { source: "https://upload.wikimedia.org/lamp.png" } },
+          { pageid: 3, index: 3, title: "Lamplighter (disambiguation)", extract: "Lamplighter may refer to:" },
+        ] } });
+      }
+      if (url.searchParams.get("titles")) {
+        return json({ query: { pages: [{ pageid: 1, title: "Lamplighter", description: "Person employed to light street lamps", fullurl: "https://en.wikipedia.org/wiki/Lamplighter",
+          thumbnail: { source: "https://upload.wikimedia.org/lamp.png" },
+          extract: "A lamplighter was a person employed to light street lights.\nThey worked at dusk and dawn.\n\n== History ==\nLamplighters were common in the 18th century.\n\n=== In London ===\nA few gas lamps in London are still lit by hand.\n\n== See also ==\nStreetlight\n\n== References ==\nSmith, J. (2001)." }] } });
+      }
+      return json({ query: { pages: [] } });
+    }
     if (/Adam_Smith/.test(r.request().url())) {
       return r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
         type: "standard", title: "Adam Smith", description: "Scottish economist and philosopher (1723–1790)",
@@ -425,7 +486,7 @@ ok(Boolean(p), "found a rare word in the book");
 await hover(laptop, p);
 await laptop.waitForSelector(".defcard .def-src", { timeout: 5000 });
 ok(/Wiktionary/.test(await laptop.locator(".def-src").textContent()), "words missing from the dictionary come from Wiktionary");
-ok(await laptop.locator(".defcard .def-google").count() === 1, "every card has a Search Google button");
+ok(await laptop.locator(".defcard .def-google").count() === 1, "every card has a Look it up button");
 await laptop.mouse.move(5, 500); await laptop.waitForTimeout(500);
 
 // unknown word → add your own meaning
@@ -454,6 +515,58 @@ await laptop.waitForSelector(".def-mine");
 ok(true, "an unknown word can be added with your own meaning");
 await shot(laptop, "05-add-own-meaning");
 await laptop.keyboard.press("Escape");
+
+// look it up in the app: Wikipedia, your books, the web — no browser
+await laptop.evaluate(() => {
+  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bk-flow"), NodeFilter.SHOW_TEXT);
+  const clip = document.querySelector(".tab-pane.active .bk-clip").getBoundingClientRect();
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    const i = n.data.indexOf("lamplighter");
+    if (i < 0) continue;
+    const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + 11);
+    const b = r.getClientRects()[0];
+    if (!b || b.left < clip.left || b.right > clip.right) continue;
+    getSelection().removeAllRanges(); getSelection().addRange(r);
+    return;
+  }
+});
+await laptop.waitForSelector(".selbar.in");
+await laptop.locator(".selbar-btn", { hasText: "Look up" }).click();
+await laptop.waitForSelector('.research.in [aria-label="From Wikipedia"] .rs-hit', { timeout: 5000 });
+ok((await laptop.locator(".research .rs-input").inputValue()) === "lamplighter", "Look up opens the in-app search with the selected words");
+ok((await laptop.locator('.research [aria-label="From Wikipedia"] .rs-hit .rs-title').first().textContent()) === "Lamplighter", "Wikipedia results show inside the app, best match first");
+ok(!(await laptop.locator(".research").textContent()).includes("(disambiguation)"), "“may refer to” lists are left out");
+ok(await laptop.locator(".research .rs-web .btn", { hasText: "Search Google" }).count() === 1, "Google is still one tap away");
+await laptop.waitForSelector('.research [aria-label="In your books"]', { timeout: 5000 }).then(() => ok(true, "results include matches in your own books"), () => ok(false, "results include matches in your own books"));
+await laptop.waitForTimeout(350);
+await shot(laptop, "05b-look-it-up");
+await laptop.locator('.research [aria-label="From Wikipedia"] .rs-hit').first().click();
+await laptop.waitForSelector(".research .rs-art-title");
+ok((await laptop.locator(".research .rs-art-title").textContent()) === "Lamplighter", "a Wikipedia article opens inside the app");
+const sects = await laptop.locator(".research .rs-sect > summary").allTextContents();
+ok(sects.length === 1 && sects[0] === "History", "article sections fold; references and “see also” are left out");
+await laptop.locator(".research .rs-sect > summary").first().click();
+ok(await laptop.locator(".research .rs-sect h4", { hasText: "In London" }).isVisible(), "sub-sections show when a section is opened");
+ok(await laptop.locator(".research .rs-art-actions .btn.on", { hasText: "Saved" }).count() === 1, "a word you've saved shows as saved in the article");
+await laptop.waitForTimeout(350);
+await shot(laptop, "05c-article-in-app");
+await laptop.keyboard.press("Escape");
+await laptop.waitForSelector('.research [aria-label="From Wikipedia"] .rs-hit');
+ok(true, "Esc goes back from the article to the results");
+await laptop.keyboard.press("Escape");
+await laptop.waitForFunction(() => !document.querySelector(".research"));
+await laptop.mouse.click(5, 500);
+await laptop.keyboard.press("k");
+await laptop.waitForSelector(".research.in .rs-input");
+await laptop.waitForFunction(() => document.activeElement?.classList.contains("rs-input"), null, { timeout: 2000 }).catch(() => {});
+ok(await laptop.evaluate(() => document.activeElement?.classList.contains("rs-input")) && (await laptop.locator(".research .chip", { hasText: "lamplighter" }).count()) === 1,
+  "K opens an empty look-up, ready to type, with recent look-ups");
+await laptop.locator(".research .rs-input").fill("lamplighter history");
+await laptop.keyboard.press("Enter");
+await laptop.waitForFunction(() => document.querySelector(".research .rs-input")?.value === "lamplighter history" && document.querySelector('.research [aria-label="From Wikipedia"] .rs-hit'));
+ok(true, "typing a new question searches again");
+await laptop.locator('.research [aria-label="Close"]').click();
+await laptop.waitForFunction(() => !document.querySelector(".research"));
 
 // highlight in Book view → also appears in Page view
 await laptop.evaluate(() => window.__luma.reader.tabs.get(window.__luma.reader.active).book.goToPage(1, { animate: false }));
@@ -737,7 +850,7 @@ const hardList = await laptop.locator(".wh-word").allTextContents();
 ok(hardList.some((w) => /perspicacious|sesquipedalian/.test(w)) && !hardList.some((w) => /^(the|which|lamp)/.test(w)), `“Words here” finds the rare words before you read (${hardList.map((w) => w.split(" ")[0]).join(", ")})`);
 await shot(laptop, "19-words-here");
 await laptop.locator(".wh-item", { hasText: "perspicacious" }).locator(".wh-actions .icon-btn").nth(1).click();
-await laptop.waitForFunction(async () => Boolean((await import("/js/data/store.js")).store.get("words", "perspicacious")), null, { timeout: 5000 }).then(
+await until(laptop, async () => Boolean((await import("/js/data/store.js")).store.get("words", "perspicacious")), null, { timeout: 5000 }).then(
   () => ok(true, "a word can be saved straight from the list"), () => ok(false, "a word can be saved straight from the list"));
 await laptop.locator(".wh-head .btn", { hasText: "Save all" }).click();
 await laptop.waitForTimeout(800);
@@ -747,10 +860,158 @@ await setSettings(laptop, { pageTurn: "curl" });
 await laptop.waitForTimeout(600);
 const spread0 = await active(laptop, "(t) => t.book.spread");
 await laptop.keyboard.press("ArrowRight");
-const curled = await laptop.waitForSelector(".bk-curl", { state: "attached", timeout: 1000 }).then(() => true, () => false);
-await laptop.waitForTimeout(800);
+const curled = await laptop.waitForSelector(".tab-pane.active .turn-layer .turn-leaf", { state: "attached", timeout: 1000 }).then(() => true, () => false);
+await laptop.waitForTimeout(900);
 ok(curled && await active(laptop, "(t) => t.book.spread") === spread0 + 1, "page-curl turn");
 await setSettings(laptop, { pageTurn: "slide" });
+
+// book feel: every book its own kind — paper, light, page turn and sound
+const feelDoc = await active(laptop, "(t) => t.docId");
+const sounds = () => laptop.evaluate(async () => (await import("/js/core/bookfeel.js")).soundStats.played);
+const heard0 = await sounds();
+await laptop.locator(".feel-btn").click();
+await laptop.waitForSelector(".feel-pop.in");
+ok(await laptop.locator(".feel-ed").count() === 7, "seven kinds of book to choose from (Modern, Paperback, Hardcover, Pocket book, Antique, Magazine, E-reader)");
+await laptop.locator(".feel-ed", { hasText: "Hardcover" }).click();
+await laptop.waitForFunction(() => document.querySelector(".tab-pane.active").dataset.edition === "hardcover");
+await laptop.waitForTimeout(200);
+const look = await laptop.evaluate(() => {
+  const p = document.querySelector(".tab-pane.active");
+  return { paper: getComputedStyle(p.querySelector(".bk-sheet")).backgroundColor, light: p.dataset.light, edged: Boolean(p.querySelector(".bookview.edged")), lamp: getComputedStyle(p.querySelector(".feel-light")).display };
+});
+ok(look.light === "lamp" && look.lamp !== "none" && look.paper === "rgb(247, 239, 220)" && look.edged, "Hardcover: ivory paper under a reading lamp, page edges and a cloth cover");
+ok((await laptop.evaluate(async (id) => (await import("/js/data/store.js")).store.get("docs", id).feel, feelDoc))?.edition === "hardcover", "the feel is saved with the book, so it follows it to other devices");
+ok(await sounds() > heard0, "choosing a kind of book plays its page sound");
+await laptop.waitForTimeout(400);
+await shot(laptop, "20a-book-feel");
+await laptop.keyboard.press("Escape");
+const heard1 = await sounds();
+await laptop.keyboard.press("ArrowRight");
+const flipped = await laptop.waitForSelector(".tab-pane.active .turn-layer .turn-leaf", { state: "attached", timeout: 1000 }).then(() => true, () => false);
+await laptop.waitForTimeout(250);
+await shot(laptop, "20b-hardcover-turn");
+await laptop.waitForTimeout(1000);
+ok(flipped && await sounds() > heard1, "a hardcover page flips over the spine, with a heavier page sound");
+ok(!(await laptop.locator(".tab-pane.active .turn-layer").count()), "the turn cleans up after itself");
+await laptop.locator(".feel-btn").click();
+await laptop.waitForSelector(".feel-pop.in");
+if (!(await laptop.locator(".feel-custom[open]").count())) await laptop.locator(".feel-custom > summary").click();
+await laptop.locator(".feel-custom .seg button", { hasText: "E-ink" }).click();
+await laptop.locator('.feel-custom select[aria-label="Page-turn sound"]').selectOption("off");
+await laptop.locator(".feel-custom .seg button", { hasText: "Candlelight" }).click();
+await until(laptop, async (id) => { const f = (await import("/js/data/store.js")).store.get("docs", id).feel; return f.turn === "flash" && f.sound === "off" && f.light === "candle" && f.edition === "hardcover"; }, feelDoc, { timeout: 4000 })
+  .then(() => ok(true, "turn, sound and light can each be changed for this one book"), () => ok(false, "turn, sound and light can each be changed for this one book"));
+await laptop.keyboard.press("Escape");
+const heard2 = await sounds();
+await laptop.keyboard.press("ArrowRight");
+const flashed = await laptop.waitForSelector(".tab-pane.active .turn-flash", { state: "attached", timeout: 1000 }).then(() => true, () => false);
+await laptop.waitForTimeout(700);
+ok(flashed && await sounds() === heard2 && await laptop.evaluate(() => document.querySelector(".tab-pane.active").dataset.light) === "candle", "an e-ink flash, candlelight, and silence when the sound is off");
+await laptop.goto(BASE + `#/read/${ids["The River Cottage"]}`);
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+ok(await laptop.evaluate(() => document.querySelector(".tab-pane.active").dataset.edition) === "paperback", "other books keep their own feel (an EPUB starts as a paperback)");
+await laptop.goto(BASE + `#/read/${feelDoc}`);
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+await laptop.evaluate(async (id) => (await import("/js/core/bookfeel.js")).setFeel(id, {}, { replace: true }), feelDoc);
+await laptop.waitForFunction(() => document.querySelector(".tab-pane.active").dataset.edition === "modern");
+ok(true, "“Back to the default” returns the book to how it was");
+
+// Page view a page (or two) at a time: the PDF's own pages turn like a book
+await laptop.goto(BASE + `#/read/${twelve[12]}`);
+await laptop.waitForSelector(".tab-pane.active .page[data-page-number='1']", { state: "attached" });
+await active(laptop, "(t) => t.setMode('pdf')");
+await laptop.waitForTimeout(500);
+await laptop.locator(".feel-btn").click();
+await laptop.waitForSelector(".feel-pop.in");
+await laptop.locator(".feel-pop .seg button", { hasText: "Two pages" }).click();
+await laptop.locator(".feel-ed", { hasText: "Antique" }).click();
+await laptop.keyboard.press("Escape");
+await laptop.waitForFunction(() => { const t = window.__luma.reader.tabs.get(window.__luma.reader.active); return t.paged && t.viewer.spreadMode > 0 && t.el.dataset.edition === "antique"; }, null, { timeout: 4000 })
+  .then(() => ok(true, "Page view can show the original pages two at a time, like an open book"), () => ok(false, "Page view can show the original pages two at a time, like an open book"));
+await active(laptop, "(t) => t.goTo(1)");
+await laptop.waitForTimeout(700);
+const pv0 = await active(laptop, "(t) => t.viewer.currentPageNumber");
+const heard3 = await sounds();
+await laptop.keyboard.press("ArrowRight");
+const pvTurn = await laptop.waitForSelector(".tab-pane.active .turn-layer", { state: "attached", timeout: 1500 }).then(() => true, () => false);
+await laptop.waitForTimeout(450);
+await shot(laptop, "20c-pdf-spread-turn");
+await laptop.waitForTimeout(1200);
+ok(pvTurn && await active(laptop, "(t) => t.viewer.currentPageNumber") > pv0 && await sounds() > heard3, "the PDF's pages turn with the book's own animation and sound");
+ok(await laptop.evaluate(() => getComputedStyle(document.querySelector(".tab-pane.active .pdfViewer .page"), "::after").display) === "block", "PDF pages are printed on the book's paper");
+const pv1 = await active(laptop, "(t) => t.viewer.currentPageNumber");
+await laptop.mouse.move(760, 460);
+await laptop.mouse.wheel(0, 240);
+await laptop.waitForTimeout(1500);
+ok(await active(laptop, "(t) => t.viewer.currentPageNumber") > pv1, "the wheel or trackpad turns pages in this layout");
+await laptop.evaluate(async (id) => (await import("/js/core/bookfeel.js")).setFeel(id, { edition: "antique", pdfPages: "single" }, { replace: true }), twelve[12]);
+await laptop.waitForFunction(() => { const t = window.__luma.reader.tabs.get(window.__luma.reader.active); return t.paged && t.viewer.spreadMode === 0; }, null, { timeout: 4000 })
+  .then(() => ok(true, "…or one page at a time"), () => ok(false, "…or one page at a time"));
+await laptop.evaluate(async (id) => (await import("/js/core/bookfeel.js")).setFeel(id, {}, { replace: true }), twelve[12]);
+await laptop.waitForFunction(() => { const t = window.__luma.reader.tabs.get(window.__luma.reader.active); return !t.paged && t.viewer.scrollMode === 0; }, null, { timeout: 4000 })
+  .then(() => ok(true, "…or back to one long scroll"), () => ok(false, "…or back to one long scroll"));
+await laptop.goto(BASE + `#/read/${feelDoc}`);
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+await laptop.waitForTimeout(400);
+
+// reading time: counted on its own, a timed session with a summary, and Insights
+await laptop.evaluate(() => { window.__LUMA_ACTIVITY_SPEED__ = 40; });
+await laptop.mouse.move(700, 400);
+await laptop.waitForTimeout(2500);
+await laptop.keyboard.press("ArrowRight");
+await laptop.waitForTimeout(2500);
+await laptop.keyboard.press("ArrowRight");
+await laptop.waitForTimeout(1500);
+const live = await laptop.evaluate(async () => (await import("/js/data/activity.js")).summary());
+ok(live && live.ms > 60000, "reading time is counted on its own while you read");
+await laptop.locator(".timer-chip").click();
+await laptop.waitForSelector(".timer-pop.in");
+ok(/minutes today|goal reached/i.test(await laptop.locator(".timer-today-row").textContent()), "the timer shows today's reading against your daily goal");
+await laptop.locator(".timer-goals .btn", { hasText: "10 min" }).click();
+await laptop.waitForSelector(".timer-chip.running");
+await laptop.mouse.move(720, 420);
+await laptop.waitForTimeout(2200);
+ok(/\d+:\d\d/.test(await laptop.locator(".timer-chip .timer-clock").textContent()), "a timed session shows a live clock in the reader");
+await laptop.locator(".timer-chip").click();
+await laptop.waitForSelector(".timer-pop.in .timer-live");
+await shot(laptop, "20d-timer");
+await laptop.locator(".timer-live .btn", { hasText: "End session" }).click();
+await laptop.waitForSelector(".summary-dialog");
+ok(/Session done/.test(await laptop.locator(".summary-dialog").textContent()) && await laptop.locator(".summary-dialog .sum-stat").count() === 3, "ending a session shows a summary: time, pages, words and pace");
+await shot(laptop, "20e-session-summary");
+await laptop.locator(".summary-dialog .btn", { hasText: "Done" }).click();
+const saved = await laptop.evaluate(async () => (await import("/js/data/activity.js")).activityRecords().reduce((n, r) => n + r.sessions.length, 0));
+ok(saved >= 2, "reading sessions are saved with your account, so they sync like your notes");
+await laptop.evaluate(() => { window.__LUMA_ACTIVITY_SPEED__ = 1; });
+await laptop.goto(BASE + "#/insights");
+await laptop.waitForSelector(".ins-body", { timeout: 8000 });
+ok(!/^0 min$/.test(await laptop.locator(".ins-tile.hero .tile-value").textContent()), "Insights adds up your reading time");
+ok(await laptop.locator(".ins-daily .chart-svg .bar").count() >= 1 && await laptop.locator(".ins-cal .cal-grid .cal-cell:not([data-level='0'])").count() >= 1, "minutes a day and the reading calendar show it");
+ok(await laptop.locator(".ins-note").count() >= 1, "Insights opens with a few things worth knowing");
+await laptop.locator(".ins-daily .chart-svg .hit").last().hover();
+ok(await laptop.locator(".ins-daily .chart-tip:not([hidden])").count() === 1, "hovering a bar shows its value");
+await shot(laptop, "20f-insights");
+await laptop.locator("#view-insights .seg button", { hasText: "All time" }).click();
+await laptop.waitForFunction(() => document.querySelector("#view-insights .seg button.on")?.textContent === "All time" && document.querySelector(".ins-body"));
+ok(true, "…for the last 7 days, 30 days, this year or all time");
+
+// the logo is a light switch
+const mode0 = await laptop.evaluate(() => document.documentElement.dataset.mode);
+await laptop.locator(".rail .brand").click();
+await laptop.waitForFunction((m) => document.documentElement.dataset.mode !== m, mode0, { timeout: 3000 }).then(() => ok(true, "tapping the logo switches the light (Light, Sepia, Dark, Night light, Auto)"), () => ok(false, "tapping the logo switches the light (Light, Sepia, Dark, Night light, Auto)"));
+await laptop.locator(".rail .brand").click({ button: "right" });
+await laptop.waitForSelector(".light-pop.in");
+ok(await laptop.locator(".light-mode").count() === 5, "right-click (or long-press) shows every mode");
+await laptop.locator(".light-mode", { hasText: "Night light" }).click();
+await laptop.waitForFunction(() => { const r = document.documentElement.dataset; return r.mode === "night" && r.theme === "dark" && r.warm === "1"; }, null, { timeout: 3000 })
+  .then(() => ok(true, "Night light: the dark theme with a warm amber glow"), () => ok(false, "Night light: the dark theme with a warm amber glow"));
+await laptop.waitForTimeout(800);
+await shot(laptop, "20g-night-light");
+await laptop.keyboard.press("Escape");
+await setSettings(laptop, { theme: "light", warm: "off" });
+await laptop.goto(BASE + `#/read/${feelDoc}`);
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+await laptop.waitForTimeout(400);
 
 await laptop.keyboard.press("r");
 await laptop.waitForTimeout(200);
@@ -896,6 +1157,202 @@ const ankiText = await (await import("node:fs/promises")).readFile(await anki.pa
 ok(/^#separator:tab/.test(ankiText) && ankiText.split("\n").length > 4, "words export as Anki flashcards");
 ok(laptop.errors.length === 0, "no errors on laptop (v3)" + (laptop.errors.length ? ": " + laptop.errors.join(" | ") : ""));
 
+// ═════════════ Word stories: how a word is made and where it comes from ═════════════
+await laptop.goto(BASE + "#/library");
+await laptop.waitForSelector("#view-library .view-head h1");
+const anat = await laptop.evaluate(async () => {
+  const { lexiconReady } = await import("/js/data/etymology.js");
+  const { anatomy, sumUp } = await import("/js/data/morphology.js");
+  await lexiconReady();
+  const show = (w) => { const a = anatomy(w); return a ? a.parts.map((p) => p.text).join(" ") + " = " + sumUp(a) : null; };
+  return Object.fromEntries(["fastest", "unbelievable", "transportation", "went", "children", "corner", "gently"].map((w) => [w, show(w)]));
+});
+ok(/^fast -est = the most fast$/.test(anat.fastest || ""), `“fastest” is fast + -est, “the most fast” (${anat.fastest})`);
+ok(/^un- believe -able/.test(anat.unbelievable || ""), `“unbelievable” is un- + believe + -able (${anat.unbelievable})`);
+ok(/^trans- port -ation|^transport -ation/.test(anat.transportation || ""), `transportation = transport + -ation (${anat.transportation})`);
+const transport = await laptop.evaluate(async () => (await import("/js/data/morphology.js")).anatomy("transport")?.parts.map((p) => p.text + " (" + (p.meaning || "") + ")").join(" + "));
+ok(/^trans- \(across.*port \(carry/.test(transport || ""), `Latin roots: transport = trans- (across) + port (carry) (${transport})`);
+ok(/^go\b/.test(anat.went || "") && /^child\b/.test(anat.children || ""), "irregular forms lead back to their base: went → go, children → child");
+ok(anat.corner === null, "a word in its own right isn't cut up (corner ≠ corn + -er)");
+ok(/^gentle -ly/.test(anat.gently || ""), `gently → gentle + -ly (${anat.gently})`);
+const wordCard = async (w, source = null) => {
+  await laptop.evaluate(async ({ w, source }) => {
+    const m = await import("/js/ui/definition.js");
+    m.hideDefinition();
+    m.showDefinition(w, { left: 500, top: 160, right: 560, bottom: 180, width: 60, height: 20 }, source, { sticky: true });
+  }, { w, source });
+  // the card that was open fades out first
+  await laptop.waitForFunction(() => document.querySelectorAll(".defcard").length === 1, null, { timeout: 3000 }).catch(() => {});
+};
+await wordCard("fastest");
+await laptop.waitForSelector(".defcard .ws-parts", { timeout: 8000 });
+ok(/fast\s*the base word/.test(await laptop.locator(".defcard .ws-parts").innerText()) && /-est\s*the most/.test(await laptop.locator(".defcard .ws-parts").innerText()), "the card shows the parts and what each one means");
+await laptop.waitForSelector(".defcard .ws-basebox", { timeout: 8000 }).catch(() => {});
+ok(/Test meaning of fast/.test(await laptop.locator(".defcard .ws-basebox").innerText().catch(() => "")), "…and what the base word “fast” means, right there");
+await laptop.waitForSelector(".defcard .ws-origin .ws-route", { timeout: 8000 }).catch(() => {});
+const route = await laptop.locator(".defcard .ws-origin .ws-lang").allInnerTexts();
+ok(route.join(" → ") === "Proto-Germanic → Old English → Middle English → English", `where it comes from, oldest first (${route.join(" → ")})`);
+ok(/1901/.test(await laptop.locator(".defcard .ws-origin").innerText()), "Skeat's dictionary is quoted in the card");
+await shot(laptop, "32-word-anatomy");
+await laptop.locator(".defcard .ws-base-word").click();
+await laptop.waitForFunction(() => document.querySelector(".defcard .def-word")?.textContent === "fast", null, { timeout: 6000 }).then(
+  () => ok(true, "tapping the base word looks it up in the same card"), () => ok(false, "tapping the base word looks it up in the same card"));
+await laptop.locator(".defcard .def-sense .tap-w").first().click();
+await laptop.waitForTimeout(800);
+const deeper = await laptop.locator(".defcard .def-word").textContent();
+ok(deeper !== "fast", `any word in a meaning can be tapped too (→ “${deeper}”)`);
+await laptop.locator(".defcard .def-back").click();
+await laptop.waitForFunction(() => document.querySelector(".defcard .def-word")?.textContent === "fast", null, { timeout: 6000 }).catch(() => {});
+await laptop.locator(".defcard .def-back").click();
+await laptop.waitForFunction(() => document.querySelector(".defcard .def-word")?.textContent === "fastest", null, { timeout: 6000 }).then(
+  () => ok(true, "Back walks the trail of looked-up words"), () => ok(false, "Back walks the trail of looked-up words"));
+await laptop.waitForSelector(".defcard .ws-more", { timeout: 8000 });
+await laptop.locator(".defcard .ws-more").click();
+await laptop.waitForSelector(".research.in .ws-head", { timeout: 8000 });
+await laptop.waitForSelector(".research .ws-src.skeat", { timeout: 8000 }).catch(() => {});
+ok(await laptop.locator(".research .ws-src.skeat").count() >= 1 && /under “fast”/.test(await laptop.locator(".research .ws-src.skeat").first().innerText()), "the full story quotes Skeat's entries for the base word");
+ok(/Today's dictionaries — “fast”/.test(await laptop.locator(".research").innerText()), "…and today's account of “fast”");
+await laptop.evaluate(async () => (await import("/js/ui/research.js")).openResearch("elegant", { story: "elegant" }));
+await laptop.waitForFunction(() => /Middle French/.test(document.querySelector(".research .ws-route")?.textContent || ""), null, { timeout: 8000 }).catch(() => {});
+const eleg = await laptop.locator(".research .rs-body, .research").first().innerText();
+ok(/e-\s*out of/.test(eleg) && /leg\s*choose/.test(eleg), "“elegant”: e- (out of) + leg (choose) + -ant");
+ok(/Latin\s*→\s*Middle French\s*→\s*English/.test(eleg.replace(/\n/g, " ")), "“elegant” came from Latin through Middle French");
+ok(/elegant, choice, neat/.test(eleg), "Skeat (1901): elegant, choice, neat — read from the scanned book");
+await laptop.waitForSelector(".research .chip", { timeout: 8000 }).catch(() => {});
+const fam = await laptop.locator(".research .ws-sec .chip").allInnerTexts();
+ok(fam.includes("legend") && !fam.includes("phlegm"), `other words from the same root (${fam.join(", ")})`);
+await shot(laptop, "33-word-story");
+await laptop.locator('.research [aria-label="Close"]').click();
+await laptop.goto(BASE + "#/words");
+await laptop.waitForSelector(".word");
+await laptop.locator(".word .word-main").first().click();
+await laptop.waitForSelector(".word.open .word-story .ws-block, .word.open .word-story:empty", { timeout: 8000 }).catch(() => {});
+ok(await laptop.locator(".word.open .word-story").count() === 1, "saved words show their story too");
+ok(laptop.errors.length === 0, "no errors in word stories" + (laptop.errors.length ? ": " + laptop.errors.join(" | ") : ""));
+
+// ═════════════ Several words at once, full forms, more from Wikipedia ═════════════
+await laptop.keyboard.press("Escape");
+await wordCard("fastest human");
+await laptop.waitForSelector(".defcard .ph-together", { timeout: 8000 }).catch(() => {});
+ok(/the human that is faster than any other/.test(await laptop.locator(".defcard .ph-together").textContent().catch(() => "")), "“fastest human” is put into plain words: the human that is faster than any other");
+const wbwText = await laptop.locator(".defcard .ph-wordlist").innerText().catch(() => "");
+ok(/fastest\s*the most fast\s*fast/.test(wbwText) && /human/.test(wbwText), "…and explained word by word, “fastest” through “fast”");
+await laptop.waitForSelector(".defcard .ph-answer", { timeout: 8000 }).catch(() => {});
+ok(/fastest human footspeed on record/.test(await laptop.locator(".defcard .ph-answer").textContent().catch(() => "")) && await laptop.locator(".defcard .ph-answer mark").count() >= 2,
+  "Wikipedia's sentence that uses the phrase is quoted, with the words marked");
+await shot(laptop, "34-phrase-card");
+await laptop.locator(".defcard .def-save").click();
+await until(laptop, async () => (await import("/js/data/store.js")).store.list("words").some((w) => w.word === "fastest human" && /faster than any other|footspeed/.test(w.meanings?.[0]?.defs?.[0]?.d || "")), null, { timeout: 5000 }).then(
+  () => ok(true, "a phrase can be saved to your words, with its meaning"), () => ok(false, "a phrase can be saved to your words, with its meaning"));
+await wordCard("kicked the bucket");
+await laptop.waitForSelector(".defcard .ph-exact .ph-sense", { timeout: 8000 }).catch(() => {});
+const idiom = await laptop.locator(".defcard .ph-exact").innerText().catch(() => "");
+ok(/kick the bucket/i.test(idiom) && /To die/.test(idiom), "idioms are found even in another tense (kicked the bucket → kick the bucket: to die)"
+  + (/To die/.test(idiom) ? "" : ` [card: ${(await laptop.locator(".defcard").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 300)}]`));
+// full forms: as the book defines it, the built-in list, Roman numerals
+await laptop.evaluate(async () => (await import("/js/data/db.js")).idb.put("texts", { id: "abbr-book", pages: ["Growth slowed. Gross Domestic Product (GDP) rose 7% while the Reserve Bank of India (RBI) held rates."] }));
+await wordCard("GDP", { docId: "abbr-book", page: 1 });
+await laptop.waitForSelector(".defcard .ph-full-list", { timeout: 8000 }).catch(() => {});
+const gdp = await laptop.locator(".defcard .ph-full").innerText().catch(() => "");
+ok(/Gross Domestic Product/.test(gdp) && /as this book defines it, p\. 1/.test(gdp), "full forms come from the book itself first (GDP = Gross Domestic Product, p. 1)");
+ok(await laptop.locator(".defcard .ws-parts").count() === 0, "an abbreviation isn't cut into word parts");
+await shot(laptop, "35-full-form");
+await wordCard("e.g.");
+await laptop.waitForSelector(".defcard .ph-full-list", { timeout: 8000 }).catch(() => {});
+ok(/exempli gratia \(for example\)/.test(await laptop.locator(".defcard .ph-full").innerText().catch(() => "")), "common abbreviations work offline: e.g. = exempli gratia (for example)");
+await wordCard("XIV");
+await laptop.waitForSelector(".defcard .ph-full-list", { timeout: 8000 }).catch(() => {});
+ok(/14 \(the Roman numeral\)/.test(await laptop.locator(".defcard .ph-full").innerText().catch(() => "")), "Roman numerals are read: XIV = 14");
+await laptop.evaluate(async () => (await import("/js/ui/definition.js")).hideDefinition());
+// selecting several words in a book
+const riverId = (await docIds(laptop))["The River Cottage"];
+await laptop.goto(BASE + `#/read/${riverId}`);
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 15000 });
+await laptop.waitForTimeout(600);
+const picked = await laptop.evaluate(() => {
+  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bk-flow"), NodeFilter.SHOW_TEXT);
+  const clip = document.querySelector(".tab-pane.active .bk-clip").getBoundingClientRect();
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    const i = n.data.indexOf("old cottage");
+    if (i < 0) continue;
+    const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + 11);
+    const b = r.getClientRects()[0];
+    if (!b || b.left < clip.left || b.right > clip.right) continue;
+    getSelection().removeAllRanges(); getSelection().addRange(r);
+    return true;
+  }
+  return false;
+});
+if (picked) {
+  await laptop.waitForSelector(".selbar.in", { timeout: 4000 }).catch(() => {});
+  await laptop.locator(".selbar-btn", { hasText: "Define" }).click({ timeout: 4000 }).catch(() => {});
+  await laptop.waitForSelector(".defcard .ph-wordlist", { timeout: 8000 }).catch(() => {});
+}
+ok(picked && (await laptop.locator(".defcard .def-phrase").textContent().catch(() => "")) === "old cottage" && /cottage/.test(await laptop.locator(".defcard .ph-wordlist").innerText().catch(() => "")),
+  "select two words and Define: their meaning together and one by one");
+await shot(laptop, "36-define-selection");
+await laptop.keyboard.press("Escape");
+// Look it up: the phrase, and an article's key facts, pictures and related articles
+await laptop.evaluate(async () => (await import("/js/ui/research.js")).openResearch("fastest human"));
+await laptop.waitForSelector(".research .rs-phrase .ph-answer", { timeout: 8000 }).then(() => ok(true, "Look it up explains a phrase too, with Wikipedia's answer"), () => ok(false, "Look it up explains a phrase too, with Wikipedia's answer"));
+await laptop.evaluate(async () => (await import("/js/ui/research.js")).openResearch("lamplighter", { article: "Lamplighter" }));
+await laptop.waitForSelector(".research .rs-facts", { timeout: 8000 }).catch(() => {});
+const factsTxt = await laptop.locator(".research .rs-facts").innerText().catch(() => "");
+ok(/Occupation type\s*Street work/.test(factsTxt) && /Public lighting; Local government/.test(factsTxt) && !/\[1\]/.test(factsTxt), "articles show their key facts (from the infobox, without footnote marks)");
+await laptop.waitForSelector(".research .rs-pic", { timeout: 8000 }).catch(() => {});
+ok(await laptop.locator(".research .rs-pic").count() === 3, "…the article's pictures");
+await laptop.waitForSelector(".research .rs-related", { timeout: 8000 }).catch(() => {});
+ok(/Gas lighting/.test(await laptop.locator(".research .rs-related").innerText().catch(() => "")), "…and related articles");
+await laptop.locator(".research .rs-pic").first().click();
+await laptop.waitForSelector("dialog.lightbox[open]", { timeout: 3000 }).then(() => ok(true, "a picture opens large, with its caption"), () => ok(false, "a picture opens large, with its caption"));
+await shot(laptop, "37-picture");
+await laptop.keyboard.press("Escape");
+await laptop.waitForTimeout(300);
+ok(await laptop.locator("dialog.lightbox[open]").count() === 0 && await laptop.locator(".research").count() === 1, "Esc closes the picture, not the article");
+await laptop.locator(".research .rs-body").evaluate((b) => b.scrollTo(0, 260));
+await shot(laptop, "38-article-facts");
+await laptop.locator('.research [aria-label="Close"]').click();
+ok(laptop.errors.length === 0, "no errors with phrases and full forms" + (laptop.errors.length ? ": " + laptop.errors.join(" | ") : ""));
+
+// ═════════════ Scanned books: read every page on the device, then show the book ═════════════
+await laptop.goto(BASE + "#/library");
+await laptop.waitForSelector("#view-library .view-head h1");
+await laptop.setInputFiles("#file-input", [FIX("scanned.pdf")]);
+await until(laptop, async () => (await import("/js/data/store.js")).store.list("docs").some((d) => d.title === "scanned"), null, { timeout: 10000 }).catch(() => {});
+const scannedDoc = await laptop.evaluate(async () => (await import("/js/data/store.js")).store.list("docs").find((d) => d.title === "scanned")?.id);
+if (!(await laptop.locator(".ocr-card").count())) await laptop.goto(BASE + `#/read/${scannedDoc}`);
+await laptop.waitForSelector(".ocr-card", { timeout: 20000 }).then(() => ok(true, "a scanned PDF shows one progress screen while every page is read"), () => ok(false, "a scanned PDF shows one progress screen while every page is read"));
+await shot(laptop, "39-scan-progress");
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 120000 }).catch(() => {});
+await laptop.waitForTimeout(600);
+const scannedText = (await laptop.locator(".tab-pane.active .bk-flow").innerText().catch(() => "")).replace(/\s+/g, " ");
+ok(/Critics called the ending ambiguous, yet its perspicacious narrator had warned us/.test(scannedText) && await laptop.locator(".ocr-card").count() === 0,
+  "…then the whole book opens in Book view as text, paragraphs joined");
+ok(!/The Lamplighter's Notebook/.test(scannedText), "the scan's running header is left out of the text");
+await shot(laptop, "40-scan-book");
+const scanWord = await laptop.evaluate(() => {
+  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bk-flow"), NodeFilter.SHOW_TEXT);
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    const i = n.data.indexOf("perspicacious");
+    if (i < 0) continue;
+    const r = document.createRange(); r.setStart(n, i + 3); r.setEnd(n, i + 4);
+    const b = r.getBoundingClientRect();
+    if (b.width) return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+  }
+  return null;
+});
+if (scanWord) { await hover(laptop, scanWord); await laptop.waitForSelector(".defcard", { timeout: 5000 }).catch(() => {}); }
+ok(scanWord && (await laptop.locator(".defcard .def-word").textContent().catch(() => "")) === "perspicacious", "words in a scanned book can be looked up");
+await laptop.keyboard.press("Escape");
+await laptop.evaluate(() => window.__luma.reader.tabs.get(window.__luma.reader.active).setMode("pdf"));
+await laptop.waitForSelector(".tab-pane.active .page .textLayer.ocrLayer .ocr-l", { state: "attached", timeout: 8000 }).catch(() => {});
+ok(await laptop.locator(".tab-pane.active .page[data-page-number='1'] .ocrLayer .ocr-l").count() > 50, "Page view gets an invisible text layer over the scan (hover, select, highlight)");
+const scanId = await laptop.evaluate(() => window.__luma.reader.active);
+ok(await laptop.evaluate(async (id) => (await (await import("/js/data/store.js")).store.kvGet("ocr:" + id))?.pages?.length === 3, scanId), "what was read is kept, so the book is read only once");
+await until(laptop, async () => (await (await import("/js/data/fulltext.js")).searchBooks("pragmatic rather than idealistic")).some((r) => r.doc.title === "scanned"), null, { timeout: 15000 }).then(
+  () => ok(true, "a scanned book can be searched inside"), () => ok(false, "a scanned book can be searched inside"));
+ok(laptop.errors.length === 0, "no errors with scanned books" + (laptop.errors.length ? ": " + laptop.errors.join(" | ") : ""));
+
 // Google Drive: books and everything else, with no Firebase
 await laptop.goto(BASE + "#/settings");
 await settingsPage(laptop, "Google Drive");
@@ -933,6 +1390,24 @@ await phone.locator(".book", { hasText: "The River Cottage" }).locator(".card-mo
 await phone.locator(".menu-item", { hasText: "Listen from where you stopped" }).click();
 await phone.waitForSelector(".player", { timeout: 10000 }).then(() => ok(true, "“Listen” on the library card opens the book and starts reading aloud"), () => ok(false, "“Listen” on the library card opens the book and starts reading aloud"));
 await phone.locator('.player [aria-label="Stop reading aloud"]').click().catch(() => {});
+await phone.evaluate(async () => (await import("/js/ui/research.js")).openResearch("lamplighter", { article: "Lamplighter" }));
+await phone.waitForSelector(".research.in .rs-art-title", { timeout: 5000 });
+const sheet = await phone.locator(".research").boundingBox();
+const vw = await phone.evaluate(() => innerWidth);
+ok(Math.abs(sheet.width - vw) < 2 && sheet.y > 20, "on phones, look-up opens as a sheet from the bottom");
+await phone.waitForTimeout(350);
+await shot(phone, "31b-phone-look-it-up");
+await phone.locator('.research [aria-label="Close"]').click();
+await phone.goto(BASE + "#/insights");
+await phone.waitForSelector(".ins-body", { timeout: 8000 });
+await phone.waitForTimeout(500);
+ok(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Insights fits a phone screen");
+await shot(phone, "31c-phone-insights");
+await phone.goto(BASE + "#/library");
+await phone.waitForSelector(".light-btn");
+const pm0 = await phone.evaluate(() => document.documentElement.dataset.mode);
+await phone.locator(".light-btn").click();
+await phone.waitForFunction((m) => document.documentElement.dataset.mode !== m, pm0, { timeout: 3000 }).then(() => ok(true, "phones get the light switch on the Library page"), () => ok(false, "phones get the light switch on the Library page"));
 ok(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "no sideways overflow on the phone");
 ok(phone.errors.length === 0, "no errors on phone (v3)" + (phone.errors.length ? ": " + phone.errors.join(" | ") : ""));
 

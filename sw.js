@@ -51,6 +51,25 @@ const SHELL = [
   "./js/sync/sync.js",
   "./js/ui/add.js",
   "./js/ui/definition.js",
+  "./js/ui/research.js",
+  "./js/ui/insights.js",
+  "./js/ui/charts.js",
+  "./js/ui/lightswitch.js",
+  "./js/ui/timer.js",
+  "./js/ui/wordstory.js",
+  "./js/data/etymology.js",
+  "./js/data/morphology.js",
+  "./js/data/wiki.js",
+  "./js/data/abbrev.js",
+  "./js/data/phrases.js",
+  "./js/ui/phrasecard.js",
+  "./js/reader/ocr.js",
+  "./js/reader/ocr-worker.js",
+  "./js/data/insights.js",
+  "./js/data/activity.js",
+  "./js/ui/feelpanel.js",
+  "./js/reader/pageturn.js",
+  "./js/core/bookfeel.js",
   "./js/ui/export.js",
   "./js/ui/icons.js",
   "./js/ui/library.js",
@@ -65,6 +84,9 @@ const SHELL = [
   "./icons/icon.svg",
   "./icons/icon-192.png",
 ];
+// Skeat's Etymological Dictionary (the "?v=" must match SKEAT_V in js/data/etymology.js).
+// Fetched quietly after an update so word histories work offline too.
+const SKEAT = ["index", ..."abcdefghijklmnopqrstuvwxyz"].map((l) => `./vendor/skeat/${l}.json?v=1`);
 const ENGINE = [
   "./vendor/pdfjs/pdf.min.mjs",
   "./vendor/pdfjs/pdf.worker.min.mjs",
@@ -88,6 +110,7 @@ self.addEventListener("activate", (event) => {
       if (key.startsWith("luma-app-") && key !== APP) await caches.delete(key);
     }
     await self.clients.claim();
+    warmSkeat(); // not awaited: anything not fetched now is fetched the first time it's needed
   })());
 });
 
@@ -117,6 +140,13 @@ self.addEventListener("fetch", (event) => {
   }
   // Everything else (Firestore, Auth, Google Drive, dictionaries) goes straight to the network.
 });
+
+async function warmSkeat() {
+  try {
+    const st = await caches.open(STATIC);
+    for (const u of SKEAT) if (!(await st.match(u))) await st.add(u).catch(() => {});
+  } catch {}
+}
 
 async function cacheFirst(req) {
   const cache = await caches.open(STATIC);

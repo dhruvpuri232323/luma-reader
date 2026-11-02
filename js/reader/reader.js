@@ -15,9 +15,15 @@ import {
   bookmarksFor, isBookmarked, toggleBookmark,
 } from "./annotate.js";
 import { showDefinition, hideDefinition } from "../ui/definition.js";
+import { openResearch } from "../ui/research.js";
+import { feelPopover } from "../ui/feelpanel.js";
+import { lightPopover } from "../ui/lightswitch.js";
+import { attachActivity } from "../data/activity.js";
+import { timerChip } from "../ui/timer.js";
+import { feelFor, EDITIONS } from "../core/bookfeel.js";
 import { icon } from "../ui/icons.js";
 import { toast, menu, dialog, confirmDialog, closeMenus } from "../ui/overlay.js";
-import { cue } from "../core/feel.js";
+import { cue, MODES, currentMode } from "../core/feel.js";
 import { player, audiobookDialog, pronunciationsDialog } from "./player.js";
 import { warmUp } from "../core/voice.js";
 import { AutoScroll } from "./autoscroll.js";
@@ -47,6 +53,12 @@ const activeTab = () => R.tabs.get(R.active) || null;
 
 export function mountReader(root) {
   R.root = root;
+  // reading time, pages and pace, measured quietly while you read
+  attachActivity({
+    getTab: () => (player.state === "playing" && player.tab ? player.tab : activeTab()),
+    isListening: () => player.state === "playing",
+    root,
+  });
   root.append(
     el("header.reader-top", {},
       el("button.icon-btn", { "aria-label": "Back to library", title: "Library", onclick: () => navigate("#/library") }, icon("back")),
@@ -96,12 +108,27 @@ export function mountReader(root) {
     const last = annotationsFor(docId).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
     if (last) editAnnotation(last);
   });
-  bus.on("book-unavailable", (tab) => { if (tab.docId === R.active) toast("This PDF is scanned page images, so there's no text to set as a book. Showing the original pages."); });
+  bus.on("book-unavailable", (tab) => {
+    if (tab.docId !== R.active || tab.ocrJob) return;
+    toast(store.settings().readScans === false
+      ? "This PDF is scanned page images. Turn on Settings → Reading → “Read scanned books” to read it as text."
+      : "This PDF's scanned pages couldn't be read as text. Showing the original pages.");
+  });
+  // scanned books: read once, then everything works
+  bus.on("ocr-done", ({ docId, ok, cancelled }) => {
+    const tab = R.tabs.get(docId);
+    if (!tab || cancelled) return;
+    if (!ok) { toast("Luma couldn't read this scanned book's pages. You can still read the original pages.", { tone: "warn" }); return; }
+    if (docId === R.active && tab.mode !== "book") {
+      toast("Your scanned book is ready as text — look up words, listen and search", { action: "Book view", onAction: () => tab.setMode("book"), duration: 8000 });
+    }
+  });
   bus.on("tab-ready", (tab) => {
     if (tab.docId === R.active) { renderActions(); if (R.panel) renderPanel(); }
     setTimeout(() => indexInBackground(tab).catch(() => {}), 2500);
     warmUp();
     pendingListen(tab);
+    pendingPanel(tab);
     // on a phone, PDF pages are tiny: point to Book view once
     if (isNarrow() && tab.kind === "pdf" && !localStorage.getItem("luma.tipBook")) {
       setTimeout(() => {
@@ -127,7 +154,7 @@ export function mountReader(root) {
     if (coll === "bookmarks" && rec.docId === R.active) { updateBookmarkButton(); if (R.panel === "bookmarks") renderPanel(); }
     if (coll === "docs") {
       if (rec.deleted && R.tabs.has(rec.id)) closeTab(rec.id);
-      else if (R.tabs.has(rec.id)) renderTabs();
+      else if (R.tabs.has(rec.id)) { renderTabs(); R.tabs.get(rec.id).refreshFeel(); if (rec.id === R.active) renderBottom(); }
     }
   });
   bus.on("files", (docId) => {
@@ -138,6 +165,7 @@ export function mountReader(root) {
     if (tab.docId === R.active) { R.search.count = { current, total }; $(".find-count", R.root)?.replaceChildren(total ? `${current} of ${total}` : ""); }
   });
   window.addEventListener("resize", debounce(() => { renderActions(); renderTabs(); }, 150));
+  bus.on("settings", () => { for (const t of R.tabs.values()) t.refreshFeel(); });
 }
 
 // ───────────────────────── tabs ─────────────────────────
@@ -162,7 +190,7 @@ export async function openDoc(docId, page) {
     if (!page) tab.recapFrom = lastOpened;
     await tab.load(page);
   } else if (page) tab.goTo(page);
-  if (tab.state === "ready") { pendingFind(tab); pendingListen(tab); }
+  if (tab.state === "ready") { pendingFind(tab); pendingListen(tab); pendingPanel(tab); }
   saveSession();
 }
 
@@ -385,6 +413,9 @@ function moreMenu(anchor) {
     ready ? { label: R.auto?.on ? "Stop auto-scroll (A)" : "Auto-scroll at reading speed (A)", icon: "down", checked: R.auto?.on, onClick: () => toggleAuto() } : null,
     ready && book ? { label: "Reading ruler (R)", icon: "ruler", checked: Boolean(s.ruler), onClick: () => toggleRuler() } : null,
     ready ? { label: "Words worth knowing here", icon: "words", onClick: () => { R.panel = "words"; renderPanel(); renderActions(); } } : null,
+    tab ? { label: `Book feel · ${EDITIONS[feelFor(tab.doc).edition]?.name || "Modern"}…`, icon: "sparkle", onClick: () => feelPopover(anchor, tab) } : null,
+    { label: `Reading light · ${MODES.find((m) => m.id === currentMode())?.name}…`, icon: "moon", onClick: () => lightPopover(anchor) },
+    { label: "Look something up (K)", icon: "globe", onClick: () => lookUpSelection() },
     ready ? "-" : null,
     book || !tab ? null : { label: "Rotate pages", icon: "rotate", onClick: () => tab?.rotate() },
     book || !tab ? null : { label: "Fit page width", icon: "fit", onClick: () => tab?.setZoom("page-width") },
@@ -430,11 +461,14 @@ function renderBottom() {
   const scale = tab.viewer?.currentScale || 1;
   setKids(foot,
     el("div.progress-line", { style: { "--p": total ? page / total : 0 } }),
+    (R.timer ||= timerChip(activeTab)),
     el("div.pager", {},
       el("button.icon-btn", { "aria-label": book ? "Previous page" : "Previous page", onclick: () => tab.prev(), disabled: !book && page <= 1 }, icon("left")),
       el("label.page-box", {}, input, el("span.muted", {}, `of ${total}`)),
       el("button.icon-btn", { "aria-label": "Next page", onclick: () => tab.next(), disabled: !book && page >= total }, icon("right"))),
     el("span.spacer"),
+    el("button.btn.sm.feel-btn", { title: "How this book feels: hardcover, paperback, antique… page turns, sounds, paper and light", onclick: (e) => feelPopover(e.currentTarget, tab) },
+      icon("sparkle", 16), el("span", {}, EDITIONS[feelFor(tab.doc).edition]?.name || "Feel")),
     book
       ? el("div.bk-bottom-meta", {},
           el("span.muted.small.time-left", {}, tab.book?.timeLeft || ""),
@@ -637,6 +671,15 @@ function pendingListen(tab) {
   setTimeout(() => { if (!player.active && R.active === tab.docId) toggleListen(); }, tab.kind === "pdf" ? 900 : 500);
 }
 
+/** Arriving from Insights' "Preview the words": open the Words panel here. */
+function pendingPanel(tab) {
+  let p;
+  try { p = JSON.parse(sessionStorage.getItem("luma.panel") || "null"); } catch {}
+  if (!p || p.docId !== tab.docId || tab.state !== "ready") return;
+  sessionStorage.removeItem("luma.panel");
+  setTimeout(() => { if (R.active !== tab.docId) return; R.panel = p.panel; renderPanel(); renderActions(); }, 700);
+}
+
 function pendingFind(tab) {
   let p;
   try { p = JSON.parse(sessionStorage.getItem("luma.find") || "null"); } catch {}
@@ -671,6 +714,8 @@ function appearancePopover(anchor) {
   const pop = el("div.menu.popover.typo-pop", { role: "dialog", "aria-label": "Fonts, size and theme" },
     el("div.pop-title", {}, el("strong", {}, "Reading appearance"),
       el("button.icon-btn.sm", { "aria-label": "Close", onclick: () => pop.remove() }, icon("x", 16))),
+    tab ? el("button.feel-link", { onclick: () => { pop.remove(); feelPopover(anchor, tab); } },
+      icon("sparkle", 17), el("span", {}, el("strong", {}, "Book feel"), el("span.muted.small", {}, ` · ${EDITIONS[feelFor(tab.doc).edition]?.name} — page turns, sounds, paper and light`)), icon("right", 16)) : null,
     typographyControls({
       preview: tab?.mode !== "book",
       compact: true,
@@ -734,6 +779,7 @@ function setFocus(on, { quiet = false } = {}) {
 
 let selBar = null;
 function hideSelBar() { selBar?.remove(); selBar = null; }
+window.addEventListener("hashchange", () => hideSelBar()); // leaving the book leaves its selection behind
 
 function wireSelection() {
   const stage = $(".stage", R.root);
@@ -787,8 +833,9 @@ function showSelBar(range, text) {
         }
       } }, icon("note", 16), el("span", {}, "Note")));
   }
-  if (words <= 3) {
+  if (words <= 8) { // one word, a phrase, a name or an abbreviation
     selBar.append(el("button.selbar-btn", {
+      title: words > 1 ? "What these words mean — together and one by one" : "Meaning",
       onmousedown: (e) => e.preventDefault(),
       onclick: () => {
         const rect = range.getBoundingClientRect();
@@ -797,6 +844,18 @@ function showSelBar(range, text) {
         hideSelBar();
         showDefinition(text, rect, { docId: tab.docId, title: tab.doc?.title, page, context: node.nodeType === 3 ? contextAround(node, text) : "" }, { sticky: true });
       } }, icon("words", 16), el("span", {}, "Define")));
+  }
+  if (words <= 12) {
+    selBar.append(el("button.selbar-btn", {
+      title: "Wikipedia, your books and the web — without leaving Luma (K)",
+      onmousedown: (e) => e.preventDefault(),
+      onclick: () => {
+        const node = range.startContainer;
+        const page = Number(node.parentElement?.closest(".page")?.dataset.pageNumber || node.parentElement?.closest(".bk-b")?.dataset.page || tab?.currentPage() || 1);
+        hideSelBar();
+        document.getSelection().removeAllRanges();
+        openResearch(text, { source: tab ? { docId: tab.docId, title: tab.doc?.title, page, context: node.nodeType === 3 ? contextAround(node, text) : "" } : null });
+      } }, icon("globe", 16), el("span", {}, "Look up")));
   }
   selBar.append(el("button.selbar-btn", {
     onmousedown: (e) => e.preventDefault(),
@@ -982,8 +1041,9 @@ function wireKeys() {
     // while listening: Space plays/pauses, Shift+arrows move by sentence
     if (player.active && k === " ") { e.preventDefault(); player.toggle(); return; }
     if (player.active && e.shiftKey && (k === "ArrowRight" || k === "ArrowLeft")) { e.preventDefault(); player.skip(k === "ArrowRight" ? 1 : -1); return; }
-    if (k === "ArrowRight" || (book && (k === "PageDown" || k === " " || k === "ArrowDown"))) { e.preventDefault(); tab.next(); }
-    else if (k === "ArrowLeft" || (book && (k === "PageUp" || k === "ArrowUp"))) { e.preventDefault(); tab.prev(); }
+    const paged = book || tab.paged;
+    if (k === "ArrowRight" || (paged && (k === "PageDown" || k === " " || (k === "ArrowDown" && !tab.el.classList.contains("zoomed"))))) { e.preventDefault(); tab.next(); }
+    else if (k === "ArrowLeft" || (paged && (k === "PageUp" || (k === "ArrowUp" && !tab.el.classList.contains("zoomed"))))) { e.preventDefault(); tab.prev(); }
     else if (k === "l" || k === "L") toggleListen();
     else if (k === "v" || k === "V") tab.setMode(book ? "pdf" : "book");
     else if (k === "Home" && e.shiftKey) tab.goTo(1);
@@ -995,7 +1055,18 @@ function wireKeys() {
     else if (k === "R" && !book && e.shiftKey) tab.rotate();
     else if ((k === "r" || k === "R") && book && !e.shiftKey) toggleRuler();
     else if (k === "a" || k === "A") toggleAuto();
+    else if (k === "k" || k === "K") { e.preventDefault(); lookUpSelection(); }
   });
+}
+
+/** K, or the menu: look up what's selected (or open an empty search). */
+function lookUpSelection() {
+  const tab = activeTab();
+  const sel = document.getSelection();
+  const text = sel && !sel.isCollapsed ? sel.toString().replace(/\s+/g, " ").trim() : "";
+  hideSelBar();
+  hideDefinition();
+  openResearch(text.split(" ").length <= 12 ? text : "", { source: tab ? { docId: tab.docId, title: tab.doc?.title, page: tab.currentPage() } : null });
 }
 
 export function readerActive() {

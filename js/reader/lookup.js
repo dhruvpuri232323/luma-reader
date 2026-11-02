@@ -2,6 +2,7 @@
 // show its definition: hover on laptops, single tap on phones and tablets.
 import { store } from "../data/store.js";
 import { showDefinition, hideDefinition, scheduleHide, cancelHide, definitionEl, isDefinitionOpen } from "../ui/definition.js";
+import { LOWER_OK } from "../data/abbrev.js";
 
 const WORD = /[\p{L}\p{M}'’\-]/u;
 
@@ -31,6 +32,13 @@ export function wordAtPoint(x, y, scope) {
   while (s > 0 && WORD.test(text[s - 1])) s--;
   while (e < text.length && WORD.test(text[e])) e++;
   let word = text.slice(s, e).replace(/^['’\-]+|['’\-]+$/g, "");
+  // abbreviations written with dots: "e.g.", "U.S.", "etc.", "Ph.D."
+  for (const m of text.matchAll(/(?<![\p{L}.])(?:\p{L}{1,2}\.){2,}(?:\p{L}\b)?|(?<![\p{L}.])\p{L}{1,6}\.(?=\s|$|[,;:)])/gu)) {
+    if (m.index <= s && m.index + m[0].length >= e && (m[0].split(".").length > 2 || LOWER_OK.has(m[0].slice(0, -1).toLowerCase()))) {
+      s = m.index; e = m.index + m[0].length; word = m[0];
+      break;
+    }
+  }
   if (!word || word.length < 2 || !/\p{L}/u.test(word)) return null;
   const lead = text.slice(s, e).indexOf(word);
   const range = document.createRange();

@@ -83,10 +83,10 @@ async function freeDictionary(w, { stems = true } = {}) {
   return null;
 }
 
-async function wiktionary(w, raw) {
+export async function wiktionary(w, raw) {
   for (const t of [...new Set([w, raw])]) {
     if (!t) continue;
-    const data = await getJson(WIKTIONARY + encodeURIComponent(t) + "?redirect=true").catch(() => null);
+    const data = await getJson(WIKTIONARY + encodeURIComponent(t.replace(/ /g, "_")) + "?redirect=true").catch(() => null);
     const en = data?.en || Object.values(data || {}).flat().filter((x) => x?.language === "English");
     if (!en?.length) continue;
     const meanings = en.map((sec) => ({
@@ -191,6 +191,30 @@ export async function lookup(raw, { phrase } = {}) {
   })();
   inflight.set(key, p);
   return p;
+}
+
+/**
+ * A phrase or idiom as a dictionary entry ("kick the bucket", "ice cream", "gave up" → "give up").
+ * { status: "ok", entry, as } | { status: "missing" } | { status: "offline" }
+ */
+export async function lookupPhrase(text, variants = []) {
+  const t = String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!t) return { status: "missing" };
+  const key = "~p:" + t;
+  const cached = await idb.get("defs", key).catch(() => null);
+  if (cached?.entry) return { status: "ok", entry: cached.entry, as: cached.as, cached: true };
+  if (cached?.missing && Date.now() - cached.at < 7 * 864e5) return { status: "missing" };
+  if (!navigator.onLine) return { status: "offline" };
+  for (const v of [...new Set([t, ...variants.map((x) => x.toLowerCase())])]) {
+    const [wk, fd] = await Promise.all([wiktionary(v, v).catch(() => null), freeDictionary(v, { stems: false }).catch(() => null)]);
+    const entry = wk || fd;
+    if (entry?.meanings?.length) {
+      await idb.put("defs", { id: key, entry, as: v }).catch(() => {});
+      return { status: "ok", entry, as: v };
+    }
+  }
+  await idb.put("defs", { id: key, missing: true, at: Date.now() }).catch(() => {});
+  return { status: "missing" };
 }
 
 export function wordId(word) {

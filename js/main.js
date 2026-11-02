@@ -15,6 +15,8 @@ import { drive } from "./sync/drive.js";
 import { mountWords, wordsShown } from "./ui/words.js";
 import { mountNotes, notesShown } from "./ui/notes.js";
 import { mountSettings, settingsShown } from "./ui/settings.js";
+import { mountInsights, insightsShown } from "./ui/insights.js";
+import { wireSwitch } from "./ui/lightswitch.js";
 import { mountReader, openDoc, restoreSession, hasTabs, lastActive, afterShow, restoreCompare } from "./reader/reader.js";
 
 const NAV = [
@@ -22,6 +24,7 @@ const NAV = [
   ["read", "Reading", "book"],
   ["words", "Words", "words"],
   ["notes", "Notes", "notes"],
+  ["insights", "Insights", "chart"],
   ["settings", "Settings", "settings"],
 ];
 
@@ -33,6 +36,7 @@ async function boot() {
   mountLibrary($("#view-library"));
   mountWords($("#view-words"));
   mountNotes($("#view-notes"));
+  mountInsights($("#view-insights"));
   mountSettings($("#view-settings"));
   mountReader($("#view-reader"));
 
@@ -70,7 +74,7 @@ function buildShell() {
     el("a.nav-item", { href: key === "read" ? "#/read" : `#/${key}`, dataset: { nav: key } }, icon(ic, 22), el("span", {}, label));
   setKids($("#app"), 
     el("nav.rail", { "aria-label": "Main" },
-      el("a.brand", { href: "#/library", "aria-label": "Luma Reader home" }, el("span.brand-mark", { "aria-hidden": "true" }), el("span.brand-name", {}, "Luma")),
+      wireSwitch(el("button.brand", { type: "button" }, el("span.brand-mark", { "aria-hidden": "true" }), el("span.brand-name", {}, "Luma"))),
       el("div.nav", {}, NAV.map(navBtn)),
       el("button.sync-chip", { onclick: () => navigate("#/settings"), "aria-live": "polite" })),
     el("main.views", {},
@@ -78,6 +82,7 @@ function buildShell() {
       el("section.view.reader#view-reader", { "aria-label": "Reader" }),
       el("section.view#view-words", { "aria-label": "Words" }),
       el("section.view#view-notes", { "aria-label": "Notes" }),
+      el("section.view#view-insights", { "aria-label": "Insights" }),
       el("section.view#view-settings", { "aria-label": "Settings" })),
     el("nav.bottom-nav", { "aria-label": "Main" }, NAV.map(navBtn)),
     el("div.dropzone", { "aria-hidden": "true" }, el("div", {}, icon("upload", 40), el("p", {}, "Drop PDFs, EPUBs or text files to add them"))));
@@ -109,9 +114,9 @@ async function show({ view, args, query }) {
     afterShow();
     return;
   }
-  if (!["library", "words", "notes", "settings"].includes(view)) { navigate("#/library", { replace: true }); return; }
+  if (!["library", "words", "notes", "insights", "settings"].includes(view)) { navigate("#/library", { replace: true }); return; }
   setView(view);
-  ({ words: wordsShown, notes: notesShown, settings: settingsShown })[view]?.(query);
+  ({ words: wordsShown, notes: notesShown, insights: insightsShown, settings: settingsShown })[view]?.(query);
 }
 
 function setView(name) {

@@ -52,7 +52,6 @@ export function typographyControls({ preview = true, compact = false, onSwitchTo
         el("div.typo-row", {}, el("span.typo-label", {}, "Paragraphs"), seg("paraStyle", [["indent", "Indented"], ["spaced", "Spaced"]])),
         el("div.typo-row", {}, el("span.typo-label", {}, "Layout"), seg("bookLayout", [["pages", "Pages"], ["scroll", "Scroll"]])),
         s.bookLayout !== "scroll" ? el("div.typo-row", {}, el("span.typo-label", {}, "Pages"), seg("bookSpread", [["auto", "Two on wide screens"], ["single", "Always one"]])) : null,
-        s.bookLayout !== "scroll" ? el("div.typo-row", {}, el("span.typo-label", {}, "Page turn"), seg("pageTurn", [["slide", "Slide"], ["curl", "Curl"], ["none", "Instant"]])) : null,
         toggle("justify", "Justify text"),
         toggle("ruler", "Reading ruler"),
         toggle("underlineSaved", "Underline words I've saved")),

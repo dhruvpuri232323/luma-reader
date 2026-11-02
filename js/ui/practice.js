@@ -1,7 +1,7 @@
 // Practice: more ways to really learn your words than flipping cards —
 // a meaning quiz, spelling from sound, saying the word aloud, and using it in a
 // sentence of your own. Every answer feeds the same spaced-repetition schedule.
-import { el, setKids } from "../core/util.js";
+import { el, setKids, bus } from "../core/util.js";
 import { store } from "../data/store.js";
 import { schedule, isDue } from "../data/dictionary.js";
 import { baseForms } from "../data/common-words.js";
@@ -49,6 +49,7 @@ async function grade(w, g) {
   const srs = schedule(w.srs, g);
   await store.patch("words", w.id, { srs, ...(srs.interval >= 21 ? { status: "mastered" } : {}) });
   bump();
+  bus.emit("word-review", { id: w.id, correct: g > 0 });
 }
 
 const norm = (s) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z' -]/g, "").trim();

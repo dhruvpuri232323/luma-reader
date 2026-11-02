@@ -63,7 +63,7 @@ export class AutoScroll {
     const tab = this.tab;
     if (!tab || tab.state !== "ready" || !tab.el.classList.contains("active")) { this.stop(); return; }
     if (!this.paused && now > this.holdUntil) {
-      if (tab.mode === "book" && tab.book && !tab.book.scroll) this.#paged(now);
+      if ((tab.mode === "book" && tab.book && !tab.book.scroll) || tab.paged) this.#paged(now);
       else this.#glide(dt);
     }
     this.raf = requestAnimationFrame((t) => this.#tick(t));
@@ -110,19 +110,37 @@ export class AutoScroll {
     return this.pxPerWord.get(key);
   }
 
-  /** Paged Book view: turn when you'd have read what's on screen. */
+  /** Words on the PDF page(s) on screen, for Page view's page-at-a-time layouts. */
+  #pdfWords() {
+    const tab = this.tab;
+    const p = tab.currentPage();
+    const n = tab.viewer?.spreadMode ? 2 : 1;
+    this.pageWords ||= new Map();
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+      const pg = p + i;
+      if (pg > tab.pages) break;
+      if (!this.pageWords.has(pg)) { this.pageWords.set(pg, 260); tab.text(pg).then((t) => this.pageWords.set(pg, Math.max(40, wordCount(t || "")))); }
+      total += this.pageWords.get(pg);
+    }
+    return total;
+  }
+
+  /** Turn the page (Book view, or Page view a page at a time) when you'd have read what's on screen. */
   #paged(now) {
-    const book = this.tab.book;
+    const tab = this.tab;
+    const book = tab.mode === "book" ? tab.book : null;
     if (!this.turnAt) {
-      const words = book.visibleWords();
+      const words = book ? book.visibleWords() : this.#pdfWords();
       this.turnAt = now + Math.max(4000, (words / this.wpm) * 60000);
       this.turnStart = now;
     }
     if (this.bar) this.bar.style.setProperty("--p", clamp((now - this.turnStart) / (this.turnAt - this.turnStart), 0, 1));
     if (now >= this.turnAt) {
       this.turnAt = 0;
-      if (book.atEnd) { this.stop(); return; }
-      book.next({ auto: true });
+      const atEnd = book ? book.atEnd : tab.viewer.currentPageNumber >= tab.viewer.pagesCount;
+      if (atEnd) { this.stop(); return; }
+      tab.next({ auto: true });
     }
   }
 

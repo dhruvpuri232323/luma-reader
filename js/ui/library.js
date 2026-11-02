@@ -1,4 +1,5 @@
 // Library: import, browse, search and manage books.
+import { wireSwitch } from "./lightswitch.js";
 import { el, $, debounce, relTime, downloadBlob, bus, setKids } from "../core/util.js";
 import { store } from "../data/store.js";
 import { importFiles, progressOf, statusOf, STATUS_LABEL, resetProgress, setCompleted, kindOf } from "../data/library.js";
@@ -96,6 +97,7 @@ function render() {
       el("div.view-title", {}, el("h1", {}, "Library"),
         el("p.muted", {}, all.length ? `${all.length} ${all.length === 1 ? "book" : "books"}` : "Your books and articles, ready on every device")),
       el("div.head-actions", {},
+        wireSwitch(el("button.btn.light-btn.phone-only", { type: "button" }, el("span.brand-mark.sm", { "aria-hidden": "true" }))),
         el("button.btn.primary", { onclick: (e) => addMenu(e.currentTarget), id: "import-btn", "aria-haspopup": "menu" }, icon("plus", 18), el("span", {}, "Add")))
     ),
     all.length ? toolbar(counts) : null,

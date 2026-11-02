@@ -1,5 +1,6 @@
 // Book view: a book's text set as real pages — your font, size, spacing and
-// margins; two-page spreads on wide screens; page turns (slide or page-curl)
+// margins; two-page spreads on wide screens; page turns in the book's own
+// feel (flip, curl, slide, fade or an e-ink flash, with a page-turn sound)
 // by tap, swipe, arrow keys or trackpad — or one continuous scroll. Running
 // headers, time left, footnote pop-ups, a reading ruler, and highlight layers
 // for notes, saved words, hard words, search and read-aloud.
@@ -12,6 +13,9 @@ import { annotationsFor, COLORS } from "./annotate.js";
 import { REFLOW_FONTS } from "../core/feel.js";
 import { icon } from "../ui/icons.js";
 import { wordAtPoint } from "./lookup.js";
+import { feelFor, playTurn } from "../core/bookfeel.js";
+import { beginTurn } from "./pageturn.js";
+import { etaText } from "./ocr.js";
 
 const WPM_KEY = "luma.wpm";
 const MEASURE = { narrow: 27, balanced: 32, wide: 40 }; // max text column width, in em
@@ -65,7 +69,7 @@ export class BookView {
     this.offSettings = bus.on("settings", () => this.relayout());
     this.offPlayer = bus.on("player-layout", () => this.relayout());
     this.offChange = bus.on("change", ({ coll, rec, source }) => {
-      if (coll === "settings" && source === "remote") this.relayout();
+      if (coll === "settings" && rec?.id === "settings" && source === "remote") this.relayout();
       if (coll === "annotations" && rec.docId === this.tab.docId) this.refreshHighlights();
       if (coll === "words") this.refreshVocab();
     });
@@ -166,7 +170,22 @@ export class BookView {
     this.#setStatus("Setting the pages…");
     await this.model.ready();
     if (this.model.looksScanned) {
-      this.#setStatus("This PDF is made of scanned page images, so there's no text to set as a book. Page view shows it as it is.", true);
+      await this.tab.scanCheck?.catch(() => {});
+      let job = this.tab.ocrJob;
+      // stopped earlier: choosing Book view again reads it now
+      if (this.model.looksScanned && job?.state !== "running" && store.settings().readScans !== false) job = this.tab.readScannedNow() || job;
+      if (this.model.looksScanned && job?.state === "running") {
+        // read the whole book first, then show it
+        this.#showReading(job);
+        const pages = await job.promise.catch(() => null);
+        this.#hideReading();
+        if (pages) await this.model.ready();
+      }
+    }
+    if (this.model.looksScanned) {
+      this.#setStatus(this.tab.ocrJob?.error || store.settings().readScans === false
+        ? "This PDF is made of scanned page images and its pages couldn't be read as text. Page view shows it as it is."
+        : "This PDF is made of scanned page images, so there's no text to set as a book. Page view shows it as it is.", true);
       return false;
     }
     this.#applyGeometry();
@@ -182,6 +201,40 @@ export class BookView {
     this.refreshVocab();
     this.#setStatus("");
     return true;
+  }
+
+  /** "Reading your scanned book — 34 of 210 pages · about 2 min left" */
+  #showReading(job) {
+    this.#setStatus("");
+    const bar = el("span.ocr-bar-fill");
+    const count = el("p.ocr-count");
+    const card = el("div.ocr-card", { role: "status", "aria-live": "polite" },
+      el("div.ocr-icon", { "aria-hidden": "true" }, icon("book", 28)),
+      el("h3", {}, "Reading your scanned book"),
+      el("p.ocr-sub", {}, "Luma is reading every page on this device, so you can look up words, listen and search. It's ready in one go, and only happens once."),
+      el("div.ocr-bar", {}, bar),
+      count,
+      el("div.row.wrap.ocr-actions", {},
+        el("button.btn.sm", { type: "button", onclick: () => this.tab.setMode("pdf") }, icon("pages", 15), "See the original pages meanwhile"),
+        el("button.btn.sm.ghost", { type: "button", onclick: () => { job.cancel(); } }, "Stop")));
+    const update = () => {
+      const pct = job.total ? (job.done / job.total) * 100 : 0;
+      bar.style.width = pct.toFixed(1) + "%";
+      count.textContent = `${job.done} of ${job.total} pages · ${etaText(job.eta())}`;
+    };
+    update();
+    this.offReading?.();
+    this.offReading = bus.on("ocr-progress", (e) => { if (e.docId === this.tab.docId) update(); });
+    this.readingEl?.remove();
+    this.readingEl = el("div.ocr-screen", {}, card);
+    this.el.append(this.readingEl);
+  }
+
+  #hideReading() {
+    this.offReading?.();
+    this.offReading = null;
+    this.readingEl?.remove();
+    this.readingEl = null;
   }
 
   #setStatus(msg, sticky = false) {
@@ -338,7 +391,7 @@ export class BookView {
     if (this.scroll) return;
     this.spread = clamp(spread, 0, this.totalSpreads - 1);
     const x = this.spread * this.cols * this.geom.step;
-    const style = store.settings().pageTurn || "slide";
+    const style = feelFor(this.tab.doc).turn;
     this.flow.classList.toggle("animate", animate && style === "slide" && !reduced());
     this.flow.style.transform = `translate3d(${-x}px,0,0)`;
     this.#afterMove();
@@ -354,6 +407,7 @@ export class BookView {
       this.nextBtn.disabled = this.chunk >= this.lastChunk && this.spread >= this.totalSpreads - 1;
     }
     this.tab.savePosition(this.page, { end: this.moved && this.nextBtn.disabled });
+    this.updateEdges();
     this.#updateRunning();
     bus.emit("tab-page", this.tab);
   }
@@ -381,8 +435,8 @@ export class BookView {
       this.clip.scrollBy({ top: this.clip.clientHeight - this.geom.lineH * 2, behavior: reduced() ? "auto" : "smooth" });
       return;
     }
-    if (this.spread < this.totalSpreads - 1) return this.#turn(1, () => this.#show(this.spread + 1, { animate: true }));
-    if (this.chunk < this.lastChunk) return this.#turn(1, () => this.#swapChunk(this.chunk + 1, "next"));
+    if (this.spread < this.totalSpreads - 1) return this.#turn(1, () => this.#show(this.spread + 1, { animate: true }), { auto });
+    if (this.chunk < this.lastChunk) return this.#turn(1, () => this.#swapChunk(this.chunk + 1, "next"), { auto });
   }
 
   async prev() {
@@ -397,46 +451,54 @@ export class BookView {
     if (this.chunk > 0) return this.#turn(-1, () => this.#swapChunk(this.chunk - 1, "prev"));
   }
 
-  /** Page-curl: a leaf of the old page folds over the spine to reveal the new one. */
-  async #turn(dir, apply) {
-    const style = store.settings().pageTurn || "slide";
-    if (style !== "curl" || reduced() || !this.sheet.animate) return apply();
-    if (this.turning) { this.turning.finish(); }
-    const oldSheet = this.sheet.cloneNode(true);
-    await apply();
-    const newSheet = this.sheet.cloneNode(true);
-    const spread = this.cols === 2;
+  /** A page turn in this book's feel: the sound, then the animation (slide is
+   *  the text gliding along; the others are drawn over the page). */
+  async #turn(dir, apply, { auto = false, silent = false } = {}) {
+    const f = feelFor(this.tab.doc);
+    if (!silent) playTurn(f.sound, { dir, volume: f.volume * (auto ? 0.45 : 1) });
+    const style = f.turn;
+    if (style === "slide" || style === "none" || !f.ms || !this.sheet.animate || !this.visible) return apply();
     const r = this.sheet.getBoundingClientRect();
     const host = this.el.getBoundingClientRect();
-    const layer = el("div.bk-curl", { style: { left: r.left - host.left + "px", top: r.top - host.top + "px", width: r.width + "px", height: r.height + "px" } });
-    const half = (node, side) => { node.classList.add("bk-curl-face"); node.style.clipPath = side === "l" ? "inset(0 50% 0 0)" : side === "r" ? "inset(0 0 0 50%)" : "none"; return node; };
-    // forward: right page lifts and turns left; backward: left page turns right
-    const turningSide = !spread ? "all" : dir > 0 ? "r" : "l";
-    const restingSide = dir > 0 ? "l" : "r";
-    if (spread) layer.append(half(oldSheet.cloneNode(true), restingSide)); // old page that stays until covered
-    const front = half(oldSheet, turningSide);
-    const back = half(newSheet, spread ? restingSide : "all");
-    back.classList.add("back");
-    const shade = el("div.bk-curl-shade");
-    const leaf = el("div.bk-curl-leaf", { style: { transformOrigin: !spread ? (dir > 0 ? "left center" : "right center") : "50% 50%" } }, front, back, shade);
-    layer.append(leaf);
-    this.el.append(layer);
-    const angle = dir > 0 ? -180 : 180;
-    const anim = leaf.animate(
-      spread
-        ? [{ transform: "rotateY(0deg)" }, { transform: `rotateY(${angle}deg)` }]
-        : [{ transform: "rotateY(0deg)", opacity: 1 }, { transform: `rotateY(${dir > 0 ? -95 : 95}deg)`, opacity: 0.2 }],
-      { duration: spread ? 620 : 460, easing: "cubic-bezier(.45,.05,.3,1)" });
-    shade.animate([{ opacity: 0 }, { opacity: 0.35, offset: 0.5 }, { opacity: 0 }], { duration: spread ? 620 : 460 });
-    this.turning = anim;
-    try { await anim.finished; } catch {}
-    layer.remove();
-    this.turning = null;
+    const rect = { left: r.left - host.left, top: r.top - host.top, width: r.width, height: r.height };
+    const turn = beginTurn(this.el, rect, this.sheet.cloneNode(true));
+    this.turning = turn;
+    await apply();
+    await turn.run({ style, ms: f.ms, dir, spread: this.cols === 2, newNode: this.sheet.cloneNode(true), paper: getComputedStyle(this.sheet).backgroundColor });
+    if (this.turning === turn) this.turning = null;
+  }
+
+  /** Page edges that thicken on the left as you read, and the book's cover
+   *  around them (laptops and tablets, page layout). */
+  updateEdges() {
+    const pane = this.el.closest(".tab-pane");
+    const on = pane?.classList.contains("feel-edges") && !this.scroll && !this.el.classList.contains("phone") && this.model?.numPages > 1;
+    if (!on) { this.sheet.style.removeProperty("--sheet-shadow"); this.el.classList.remove("edged"); return; }
+    const N = 7;
+    const prog = clamp((this.page - 1) / Math.max(1, this.model.numPages - 1), 0, 1);
+    const left = this.cols === 2 ? Math.round(prog * N) : 0;
+    const right = this.cols === 2 ? N - left : Math.max(1, Math.round((1 - prog) * N));
+    const line = "rgb(60 45 25 / .16)";
+    const layers = [];
+    for (let i = 1; i <= Math.max(left, right); i++) {
+      const c = i % 2 ? "var(--paper)" : line;
+      if (i <= left) layers.push(`${-i}px ${i * 0.45}px 0 ${c}`);
+      if (i <= right) layers.push(`${i}px ${i * 0.45}px 0 ${c}`);
+    }
+    const cover = pane.dataset.cover;
+    const n = Math.max(left, right);
+    if (cover === "device") layers.push("0 0 0 16px var(--cover)", "0 0 0 17px rgb(255 255 255 / .06)");
+    else if (cover === "leather") layers.push(`0 0 0 ${n + 6}px var(--cover)`, `0 0 0 ${n + 7}px #B8913A`, `0 0 0 ${n + 12}px var(--cover)`);
+    else if (cover === "cloth") layers.push(`0 0 0 ${n + 9}px var(--cover)`, `0 0 0 ${n + 10}px rgb(0 0 0 / .25)`);
+    else if (cover === "paper") layers.push(`0 0 0 ${n + 3}px var(--cover)`);
+    layers.push("0 26px 50px -16px rgb(0 0 0 / .5)");
+    this.sheet.style.setProperty("--sheet-shadow", layers.join(", "));
+    this.el.classList.add("edged");
   }
 
   async #swapChunk(ci, dir) {
-    const curl = (store.settings().pageTurn || "slide") === "curl";
-    if (!curl) this.flow.classList.add("fade");
+    const slide = feelFor(this.tab.doc).turn === "slide"; // the other turns cover the swap with a picture of the old page
+    if (slide) this.flow.classList.add("fade");
     await this.loadChunk(ci);
     this.#show(dir === "next" ? 0 : this.totalSpreads - 1, { animate: false });
     requestAnimationFrame(() => this.flow.classList.remove("fade"));
@@ -489,7 +551,7 @@ export class BookView {
       return;
     }
     const spread = Math.floor(this.#colOfRect(rect) / this.cols);
-    if (spread !== this.spread) this.#turn(spread > this.spread ? 1 : -1, () => this.#show(spread));
+    if (spread !== this.spread) this.#turn(spread > this.spread ? 1 : -1, () => this.#show(spread), { silent: true }); // the voice turns the page; no rustle over it
   }
 
   /** Place the reading ruler on the line under a point (pointer, tap, or the word being read). */

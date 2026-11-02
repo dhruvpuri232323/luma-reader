@@ -5,9 +5,15 @@ import { store } from "../data/store.js";
 import { recordPosition } from "../data/library.js";
 import { openPdf, pdfViewerLib, pageText, closePdf } from "./pdf.js";
 import { BookModel } from "./bookmodel.js";
+import { savedOcr, readScanned, ocrJob, overlayPage } from "./ocr.js";
+import { forget as forgetText, indexInBackground } from "../data/fulltext.js";
 import { BookView } from "./bookview.js";
 import { TextBookModel } from "./textmodel.js";
 import { parseEpub } from "../data/importers.js";
+import { feelFor, applyFeel } from "../core/bookfeel.js";
+import { turnPdf } from "./pageturn.js";
+import { wordAtPoint } from "./lookup.js";
+import { icon } from "../ui/icons.js";
 
 const zoomKey = (id) => `luma.zoom.${id}`;
 const rotKey = (id) => `luma.rot.${id}`;
@@ -27,6 +33,17 @@ export class Tab {
     this.container = el("div.pdf-scroller", { tabindex: "0" }, el("div.pdfViewer"));
     this.el.append(this.container);
     this.savePosition = debounce((p, opts) => recordPosition(this.docId, p, opts), 900);
+    this.pdfLayout = "scroll";
+    this.#wirePaged();
+    applyFeel(this);
+  }
+
+  /** The book's feel changed (here or on another device), or the theme did. */
+  refreshFeel() {
+    const f = applyFeel(this);
+    if (!f) return;
+    if (this.viewer && this.state === "ready" && (f.pdfPages || "scroll") !== this.pdfLayout) this.setPdfLayout(f.pdfPages || "scroll");
+    this.book?.updateEdges();
   }
 
   get doc() { return store.get("docs", this.docId); }
@@ -73,22 +90,28 @@ export class Tab {
         const rot = Number(localStorage.getItem(rotKey(this.docId)) || 0);
         if (rot) this.viewer.pagesRotation = rot;
         if (start > 1) this.viewer.currentPageNumber = start;
+        const layout = feelFor(this.doc).pdfPages;
+        if (layout && layout !== "scroll") this.setPdfLayout(layout);
         this.state = "ready";
         this.emit();
         bus.emit("tab-ready", this);
+        this.scanCheck = this.#checkScanned();
+        const scanned = await this.scanCheck;
         const wanted = this.doc?.view || localStorage.getItem(modeKey(this.docId)) || store.settings().defaultMode;
-        if (wanted === "book") this.setMode("book", { page: start, quiet: true });
+        // a scanned book being read for the first time opens on Book view, which shows the progress and then the book
+        if (wanted === "book" || scanned === "reading") this.setMode("book", { page: start, quiet: true });
       });
       eventBus.on("pagechanging", ({ pageNumber }) => {
         if (this.mode !== "pdf") return;
         this.savePosition(pageNumber, { end: this.pages > 1 && pageNumber >= this.pages && this.moved });
         this.moved = true;
         bus.emit("tab-page", this);
+        if (this.paged) requestAnimationFrame(() => this.#checkZoomed());
       });
-      eventBus.on("scalechanging", () => bus.emit("tab-scale", this));
+      eventBus.on("scalechanging", () => { bus.emit("tab-scale", this); requestAnimationFrame(() => this.#checkZoomed()); });
       eventBus.on("rotationchanging", () => bus.emit("tab-rotation", this));
-      eventBus.on("textlayerrendered", ({ pageNumber }) => bus.emit("page-layer", { tab: this, pageNumber, text: true }));
-      eventBus.on("pagerendered", ({ pageNumber }) => bus.emit("page-layer", { tab: this, pageNumber }));
+      eventBus.on("textlayerrendered", ({ pageNumber }) => { this.#overlayOcr(pageNumber); bus.emit("page-layer", { tab: this, pageNumber, text: true }); });
+      eventBus.on("pagerendered", ({ pageNumber }) => { this.#overlayOcr(pageNumber); bus.emit("page-layer", { tab: this, pageNumber }); });
       eventBus.on("updatefindmatchescount", ({ matchesCount }) => bus.emit("find-count", { tab: this, ...matchesCount }));
 
       if (this.doc && this.doc.pages !== pdf.numPages) store.patch("docs", this.docId, { pages: pdf.numPages });
@@ -145,8 +168,139 @@ export class Tab {
     if (this.mode === "book") return this.book.goToPage(page);
     if (this.viewer) this.viewer.currentPageNumber = page;
   }
-  next() { return this.mode === "book" ? this.book.next() : this.viewer?.nextPage(); }
-  prev() { return this.mode === "book" ? this.book.prev() : this.viewer?.previousPage(); }
+  /** Page view showing a page (or two) at a time, like a book. */
+  get paged() { return this.mode === "pdf" && this.pdfLayout !== "scroll" && this.viewer?.scrollMode === 3; }
+  next({ auto = false } = {}) {
+    if (this.mode === "book") return this.book.next({ auto });
+    if (this.paged) return turnPdf(this, 1, () => this.viewer.nextPage(), { auto });
+    return this.viewer?.nextPage();
+  }
+  prev() {
+    if (this.mode === "book") return this.book.prev();
+    if (this.paged) return turnPdf(this, -1, () => this.viewer.previousPage());
+    return this.viewer?.previousPage();
+  }
+
+  /** Page view layout for this book: continuous scroll, one page at a time, or
+   *  two pages side by side like an open book. */
+  setPdfLayout(layout = "scroll") {
+    const v = this.viewer;
+    this.pdfLayout = layout;
+    if (!v) return;
+    const paged = layout === "single" || layout === "spread";
+    const page = v.currentPageNumber;
+    try {
+      v.scrollMode = paged ? 3 : 0;
+      // books start with a page on its own, like a cover; shorter papers pair 1–2, 3–4
+      v.spreadMode = layout === "spread" ? (this.pages > 24 ? 2 : 1) : 0;
+    } catch (e) { console.warn("Page layout:", e); }
+    const ok = !paged || v.scrollMode === 3;
+    this.el.classList.toggle("pdf-paged", paged && ok);
+    if (paged && ok) v.currentScaleValue = "page-fit";
+    else v.currentScaleValue = localStorage.getItem(zoomKey(this.docId)) || (matchMedia("(max-width: 760px)").matches ? "page-width" : "auto");
+    if (v.currentPageNumber !== page) v.currentPageNumber = page;
+    requestAnimationFrame(() => this.#checkZoomed());
+    bus.emit("tab-page", this);
+  }
+
+  #checkZoomed() {
+    const c = this.container;
+    this.el.classList.toggle("zoomed", this.paged && (c.scrollHeight > c.clientHeight + 6 || c.scrollWidth > c.clientWidth + 6));
+    this.pvPrev && (this.pvPrev.disabled = !this.viewer || this.viewer.currentPageNumber <= 1);
+    this.pvNext && (this.pvNext.disabled = !this.viewer || this.viewer.currentPageNumber >= this.viewer.pagesCount);
+  }
+
+  /** Turning pages in Page view's page-at-a-time layouts: swipe, tap the edges,
+   *  the wheel or trackpad, or the arrows that appear on hover. */
+  #wirePaged() {
+    const c = this.container;
+    let acc = 0, lock = 0;
+    c.addEventListener("wheel", (e) => {
+      if (!this.paged || e.ctrlKey || e.metaKey || this.el.classList.contains("zoomed")) return;
+      e.preventDefault();
+      if (performance.now() < lock) return;
+      acc += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (Math.abs(acc) > 60) {
+        if (acc > 0) this.next(); else this.prev();
+        acc = 0;
+        lock = performance.now() + 450;
+      }
+    }, { passive: false });
+    let down = null;
+    c.addEventListener("pointerdown", (e) => {
+      if (!this.paged || e.button !== 0 || e.pointerType === "mouse") return;
+      down = { x: e.clientX, y: e.clientY, t: performance.now() };
+    });
+    c.addEventListener("pointerup", (e) => {
+      if (!down) return;
+      const d = down;
+      down = null;
+      if (this.el.classList.contains("zoomed") || document.getSelection()?.toString()) return;
+      const dx = e.clientX - d.x, dy = e.clientY - d.y;
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.4) { if (dx < 0) this.next(); else this.prev(); return; }
+      if (performance.now() - d.t > 350 || Math.hypot(dx, dy) > 10 || e.target.closest("a, .linkAnnotation, .annotationLayer section")) return;
+      const r = c.getBoundingClientRect();
+      const fx = (e.clientX - r.left) / r.width;
+      const word = wordAtPoint(e.clientX, e.clientY, c);
+      if (fx < 0.1 || (fx < 0.22 && !word)) { e.stopPropagation(); this.prev(); }
+      else if (fx > 0.9 || (fx > 0.78 && !word)) { e.stopPropagation(); this.next(); }
+    });
+    c.addEventListener("pointercancel", () => { down = null; });
+    this.pvPrev = el("button.bk-turn.pv-turn.prev", { "aria-label": "Previous page", onclick: () => this.prev() }, icon("left", 26));
+    this.pvNext = el("button.bk-turn.pv-turn.next", { "aria-label": "Next page", onclick: () => this.next() }, icon("right", 26));
+    this.el.append(this.pvPrev, this.pvNext);
+    new ResizeObserver(debounce(() => {
+      const v = this.viewer;
+      if (!v || this.mode !== "pdf" || c.hidden) return;
+      const val = String(v.currentScaleValue);
+      if (["page-fit", "page-width", "auto"].includes(val)) v.currentScaleValue = val; // fit again to the new size
+      this.#checkZoomed();
+    }, 150)).observe(c);
+  }
+
+  /**
+   * Scanned PDFs: use the text read from its pages before, or read the whole book now.
+   * Resolves to "text" (a normal PDF), "ready" (scanned, text available), "reading" or "off".
+   */
+  async #checkScanned() {
+    await this.model.ready();
+    if (!this.model.looksScanned || this.destroyed) return "text";
+    this.scanned = true;
+    const saved = await savedOcr(this.docId);
+    if (saved) { this.#useOcr(saved, { fresh: false }); return "ready"; }
+    if (store.settings().readScans === false) return "off";
+    this.ocrJob = readScanned(this.docId, this.pdf);
+    bus.emit("tab-ocr", this);
+    this.ocrJob.promise.then((pages) => { if (pages && !this.destroyed) this.#useOcr(pages, { fresh: true }); }).catch(() => bus.emit("tab-ocr", this));
+    return "reading";
+  }
+
+  /** Read (or read again) a scanned book now. */
+  readScannedNow() {
+    if (!this.pdf || ocrJob(this.docId)) return;
+    this.scanned = true;
+    this.ocrJob = readScanned(this.docId, this.pdf);
+    bus.emit("tab-ocr", this);
+    this.ocrJob.promise.then((pages) => { if (pages && !this.destroyed) this.#useOcr(pages, { fresh: true }); }).catch(() => bus.emit("tab-ocr", this));
+    return this.ocrJob;
+  }
+
+  #useOcr(pages, { fresh }) {
+    this.model.useOcr(pages);
+    this.ocrPages = pages;
+    this.ocrJob = null;
+    // the words go over the page images in Page view, and into search
+    this.container?.querySelectorAll(".page[data-page-number]").forEach((div) => this.#overlayOcr(Number(div.dataset.pageNumber)));
+    if (fresh) forgetText(this.docId).then(() => indexInBackground(this)).catch(() => {});
+    else indexInBackground(this).catch(() => {});
+    bus.emit("tab-ocr", this);
+  }
+
+  #overlayOcr(pageNumber) {
+    if (!this.ocrPages) return;
+    const div = this.container?.querySelector(`.page[data-page-number="${pageNumber}"]`);
+    if (div) overlayPage(div, this.ocrPages[pageNumber - 1]);
+  }
 
   async setMode(mode, { page, quiet = false } = {}) {
     if (mode === this.mode || this.state !== "ready") return true;
@@ -158,8 +312,10 @@ export class Tab {
         this.el.append(this.book.el);
       }
       this.mode = "book";
+      this.el.classList.add("mode-book");
       this.container.hidden = true;
       this.book.el.hidden = false;
+      bus.emit("tab-mode", this); // the switch shows Book straight away (a scanned book shows its progress here)
       const ok = await this.book.open(from);
       if (!ok) {
         // scanned PDF: stay on the original pages
@@ -168,6 +324,7 @@ export class Tab {
       }
     } else {
       this.mode = "pdf";
+      this.el.classList.remove("mode-book");
       this.book?.deactivate();
       if (this.book) this.book.el.hidden = true;
       this.container.hidden = false;
@@ -200,6 +357,7 @@ export class Tab {
     this.rememberZoom();
   }
   rememberZoom() {
+    if (this.paged) return; // page-at-a-time keeps the whole page in view; your scroll-mode zoom stays as it was
     localStorage.setItem(zoomKey(this.docId), String(this.viewer.currentScaleValue));
   }
   rotate() {
