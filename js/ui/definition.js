@@ -11,6 +11,8 @@ import { phraseBody, fullFormBlock, factsTable } from "./phrasecard.js";
 import { wikiFacts } from "../data/wiki.js";
 import { isPhrase } from "../data/phrases.js";
 import { isAbbreviation } from "../data/abbrev.js";
+import { translateBody } from "./translatecard.js";
+import { detectLang } from "../data/translate.js";
 import { cue } from "../core/feel.js";
 import { speakOnce } from "../core/voice.js";
 import { icon } from "./icons.js";
@@ -70,6 +72,7 @@ export async function showDefinition(word, anchorRect, source, { sticky = false,
   requestAnimationFrame(() => card?.classList.add("in"));
 
   if (source?.docId) bus.emit("lookup", { docId: source.docId, page: source.page, word: phrase || w });
+  if (isForeign(word)) { renderTranslate(); position(anchorRect); return; } // a Hindi (or other) word: its English
   if (!phrase && isPhrase(word)) { renderPhrase(); position(anchorRect); return; }
   const res = await lookup(word, { phrase });
   if (my !== seq || !card) return;
@@ -98,16 +101,18 @@ function renderLoading(w) {
 }
 
 /** Look up another word inside the card (a word you didn't know in a definition). */
-async function goTo(word, { back = false } = {}) {
+async function goTo(word, { back = false, translate = false } = {}) {
   if (!card || !current) return;
   const w = normalizeWord(word);
-  if (!w || w.length < 2 || w === current.word) return;
+  if (!w || w.length < 2 || (w === current.word && !back)) return;
   const trail = current.trail || [];
-  if (!back) trail.push({ word: current.word, raw: current.raw, phrase: current.phrase });
+  if (!back) trail.push({ word: current.translate ? current.raw.slice(0, 40) : current.word, raw: current.raw, phrase: current.phrase, translate: current.translate });
   const my = ++seq;
-  current = { ...current, key: w, word: w, raw: word, phrase: null, trail };
+  current = { ...current, key: w, word: w, raw: word, phrase: null, trail, translate };
   card.classList.add("sticky");
+  if (translate) { renderTranslate(); position(current.anchorRect); return; }
   renderLoading(w);
+  if (isForeign(word)) { renderTranslate(); position(current.anchorRect); return; }
   if (isPhrase(word)) { renderPhrase(); position(current.anchorRect); return; }
   const res = await lookup(word);
   if (my !== seq || !card) return;
@@ -116,7 +121,7 @@ async function goTo(word, { back = false } = {}) {
 }
 function goBack() {
   const prev = current?.trail?.pop();
-  if (prev) goTo(prev.raw || prev.word, { back: true });
+  if (prev) goTo(prev.raw || prev.word, { back: true, translate: prev.translate });
 }
 
 function render(res) {
@@ -240,6 +245,59 @@ function render(res) {
     storyInCard(story, w, { entry: null, onWord, onStory: () => { hideDefinition(); openResearch(w, { source, story: w }); }, alive: () => card && seq === my })
       .then((explained) => { if (explained && res.status === "missing") msgEl.remove(); if (card && seq === my) position(current.anchorRect); }).catch(() => {});
   }
+}
+
+/** Words in another script (Hindi, Bengali, Arabic…): translate rather than look up in the English dictionary. */
+const isForeign = (text) => /[^\u0000-\u024F\u1E00-\u1EFF\u2000-\u206F]/u.test(String(text)) && detectLang(text) !== "en";
+
+/**
+ * Translate a passage (English ⇄ your other language), in the card.
+ * `rect` is where it came from; `source` = { docId, page, … }.
+ */
+export function showTranslation(text, anchorRect, source = null) {
+  const t = String(text || "").trim();
+  if (!t) return;
+  seq++;
+  hideDefinition();
+  current = { key: "tr:" + t, word: normalizeWord(t) || t, raw: t, anchorRect, source, translate: true };
+  card = el("div.defcard.sticky", { role: "dialog", "aria-label": "Translation" });
+  card.addEventListener("pointerenter", cancelHide);
+  document.body.append(card);
+  renderTranslate();
+  position(anchorRect);
+  requestAnimationFrame(() => card?.classList.add("in"));
+}
+
+function renderTranslate() {
+  const { raw, source } = current;
+  const text = String(raw).trim();
+  const my = seq;
+  const onWord = (x) => goTo(x);
+  const body = translateBody(text, { onWord, alive: () => card && seq === my });
+  const single = !/\s/.test(text);
+  const saveBtn = single || text.split(/\s+/).length <= 6 ? el("button.def-save", {
+    "aria-label": "Save with its translation", title: "Save to your words, with the translation as its meaning",
+    onclick: async () => {
+      const r = body.result();
+      if (!r?.text) { toast("Wait for the translation first"); return; }
+      const entry = { word: text, asked: text, phonetic: "", audio: "", source: "translation", sourceUrl: "", meanings: [{ pos: `${r.from} → ${r.to}`, defs: [{ d: r.text, ex: "" }], synonyms: [], antonyms: [] }] };
+      const rec = await saveWord({ word: text, entry, source });
+      cue("save");
+      toast(`Saved “${rec.word}”`);
+      saveBtn.classList.add("on");
+      setKids(saveBtn, icon("bookmarkOn", 17), el("span", {}, "Saved"));
+    },
+  }, icon("bookmark", 17), el("span", {}, "Save")) : null;
+  const prev = current.trail?.[current.trail.length - 1];
+  const head = el("div.def-head", {},
+    prev ? el("button.icon-btn.def-back", { "aria-label": `Back to “${prev.word}”`, title: `Back to “${prev.word}”`, onclick: goBack }, icon("back", 18)) : null,
+    el("div.def-title", {}, el("h3.def-word.def-phrase", {}, icon("translate", 18), " Translate")),
+    el("div.def-actions", {}, saveBtn,
+      el("button.icon-btn.def-close", { "aria-label": "Close", onclick: hideDefinition }, icon("x", 18))));
+  setKids(card, head, el("div.def-body", {}, body));
+  card.classList.add("sticky");
+  const ro = new ResizeObserver(() => { if (card && seq === my) position(current.anchorRect); else ro.disconnect(); });
+  ro.observe(card);
 }
 
 /** Several words at once: the phrase, each word, and what Wikipedia says. */

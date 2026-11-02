@@ -11,7 +11,7 @@ export function normalizeWord(raw = "") {
   return raw
     .normalize("NFKC")
     .replace(/[’‘`´]/g, "'")
-    .replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "")
+    .replace(/^[^\p{L}]+|[^\p{L}\p{M}]+$/gu, "") // keep the vowel signs that end Hindi words (पानी)
     .replace(/'s$/i, "")
     .toLowerCase();
 }
@@ -218,7 +218,7 @@ export async function lookupPhrase(text, variants = []) {
 }
 
 export function wordId(word) {
-  return normalizeWord(word).replace(/[^\p{L}\p{N}'-]/gu, "-") || "word";
+  return normalizeWord(word).replace(/[^\p{L}\p{M}\p{N}'-]/gu, "-") || "word";
 }
 
 /** Save (or update) a word in the vocabulary. */

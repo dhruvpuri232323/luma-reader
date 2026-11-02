@@ -137,6 +137,8 @@ class Player {
     }
     voice.unlockAudio();
     this.tab = tab;
+    // reading a translation: its text, in a voice for its language
+    this.lang = tab.readModel ? tab.book.tr.to : null;
     this.sentences = [];
     this.cache.clear();
     this.dctx = new DialogueContext();
@@ -147,7 +149,7 @@ class Player {
     this.nextPage = startPage;
     if (startPage > 1 && store.settings().characterVoices !== false) {
       const warm = [];
-      appendSentences(warm, await tab.model.page(startPage - 1), startPage - 1, this.dctx);
+      appendSentences(warm, await (tab.readModel || tab.model).page(startPage - 1), startPage - 1, this.dctx);
     }
     this.state = "playing";
     if (tab.book) tab.book.listening = true;
@@ -299,7 +301,7 @@ class Player {
 
   // ───────── text → sentences ─────────
   async #extend(count) {
-    const model = this.tab?.model;
+    const model = this.tab?.readModel || this.tab?.model;
     if (!model) return;
     while (this.sentences.length < count && this.nextPage <= model.numPages) {
       const p = this.nextPage++;
@@ -318,6 +320,7 @@ class Player {
   // the app works out what comes next.
 
   #useNatural() {
+    if (this.lang && this.lang !== "en") return false; // the natural voice speaks English only
     return voice.prefs.engine === "natural" && voice.naturalState().status === "ready";
   }
 
@@ -564,7 +567,7 @@ class Player {
       const item = { i, k, text };
       const spokenWords = (text.match(/\S+/g) || []).length || 1;
       item.h = voice.speakSystem(text, {
-        voiceId: sys.id, pitch: sys.pitch || 1,
+        voiceId: sys.id, pitch: sys.pitch || 1, lang: this.lang && this.lang !== "en" ? this.lang : undefined,
         onStart: () => {
           if (token !== this.token) return;
           item.started = true;

@@ -69,6 +69,7 @@ const P = {
   quiz: '<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
   pencil: '<path d="M12 20h9"/><path d="M16.4 3.6a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4Z"/>',
   ruler: '<rect x="2" y="8" width="20" height="8" rx="1.5"/><path d="M6 8v3"/><path d="M10 8v4"/><path d="M14 8v3"/><path d="M18 8v4"/>',
+  translate: '<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>',
   timer: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 13.5V10"/><path d="M9.5 2.5h5"/><path d="M12 2.5V6"/><path d="m18.5 6.5 1.5-1.5"/>',
   chart: '<path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/>',

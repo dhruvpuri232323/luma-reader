@@ -10,6 +10,7 @@ import { icon } from "./icons.js";
 import { toast, confirmDialog, dialog } from "./overlay.js";
 import { installState, promptInstall } from "../core/pwa.js";
 import { typographyControls } from "./typography.js";
+import { deviceStatus, LANGUAGES, langName } from "../data/translate.js";
 import { EDITIONS } from "../core/bookfeel.js";
 import * as voice from "../core/voice.js";
 import { drive } from "../sync/drive.js";
@@ -29,6 +30,24 @@ export function mountSettings(container) {
 export function settingsShown(query = {}) {
   if (query.page) { current = query.page; localStorage.setItem("luma.settingsPage", current); }
   render();
+}
+
+function translationSection() {
+  const s = store.settings();
+  const status = el("span.set-hint", {}, "Checking this browser…");
+  const lang = s.trLang || "hi";
+  deviceStatus("en", lang).then((st) => {
+    status.textContent = st === "none" ? "This browser has no built-in translator (phones don't yet). Passages are translated online, with a free daily allowance; whole books are translated on a computer and sync here."
+      : st === "available" ? `Ready: English ⇄ ${langName(lang)} is translated on this device, offline.`
+      : st === "unavailable" ? `This browser can't translate English ⇄ ${langName(lang)} on the device.`
+      : `English ⇄ ${langName(lang)} downloads to this device the first time you translate (one time, then offline).`;
+  });
+  return section("Translation", "English and one other language, both ways: select a passage and tap Translate (or press T), tap a word in another script for its English, or translate a whole book from the reader's top bar.",
+    row("Your other language", "Books and passages in English are translated into it; anything else is translated into English.",
+      el("select.select", { "aria-label": "Your other language", onchange: (e) => store.setSettings({ trLang: e.target.value }) },
+        Object.entries(LANGUAGES).map(([code, [name, own]]) => el("option", { value: code, selected: code === lang }, `${name} — ${own}`)))),
+    row("On this device", null, status),
+    toggle("trOnline", "Use the free online translator when needed", "On phones, and when this device can't translate the passage itself. About 5,000 characters a day."));
 }
 
 function section(title, desc, ...rows) {
@@ -89,6 +108,7 @@ function pages() {
       row("Offline definitions", "Every word you look up is kept on this device", el("button.btn.sm", { onclick: async () => {
         await idb.clear("defs"); toast("Definition cache cleared");
       } }, "Clear cache")))],
+    ["translation", "Translation", "translate", translationSection],
     ["comfort", "Comfort", "moon", () => section("Comfort", "Calmer motion and sound.",
       toggle("reduceMotion", "Reduce motion", "Turns off transitions and card animations"),
       toggle("sounds", "Sound cues", "Soft tones when you save a word, bookmark or finish a book"))],

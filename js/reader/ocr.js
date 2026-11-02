@@ -48,7 +48,7 @@ async function renderGray(pdf, p) {
  * Read the whole book. Returns a job: { docId, total, done, state, startedAt, promise, cancel() }.
  * Emits "ocr-progress" { docId, done, total, eta } and "ocr-done" { docId, ok }.
  */
-export function readScanned(docId, pdf) {
+export function readScanned(docId, pdf, { lang = null } = {}) {
   if (jobs.has(docId)) return jobs.get(docId);
   const total = pdf.numPages;
   const job = { docId, total, done: 0, state: "running", startedAt: Date.now(), workers: [], cancelled: false };
@@ -71,30 +71,51 @@ export function readScanned(docId, pdf) {
   const work = (async () => {
     const pages = new Array(total);
     const n = Math.min(poolSize(), total);
-    let next = 1;
-    const loop = async () => {
+    const queue = Array.from({ length: total }, (_, i) => i + 1);
+    const spawn = () => {
       const worker = new Worker(new URL("./ocr-worker.js", import.meta.url));
       job.workers.push(worker);
-      const ask = (msg) => new Promise((resolve, reject) => {
+      worker.ask = (msg) => new Promise((resolve, reject) => {
         worker.onmessage = (e) => (e.data.error ? reject(new Error(e.data.error)) : resolve(e.data));
         worker.onerror = (e) => reject(new Error(e.message || "The reading engine stopped"));
         worker.postMessage(msg, [msg.gray.buffer]);
       });
-      while (next <= total && !job.cancelled) {
-        const p = next++;
+      return worker;
+    };
+    const done = (p, img, res) => {
+      pages[p - 1] = { w: img.pw, h: img.ph, lines: res.lines };
+      job.done++;
+      bus.emit("ocr-progress", { docId, done: job.done, total, eta: job.eta() });
+    };
+    try {
+    // Which language is the book in? Read one page in English, and in Hindi if that went badly.
+    const first = spawn();
+    if (!lang) {
+      const p = Math.min(2, total);
+      const img = await renderGray(pdf, p);
+      const copy = img.gray.slice();
+      const eng = await first.ask({ id: p, w: img.w, h: img.h, gray: img.gray, lang: "eng" });
+      let best = { lang: "eng", res: eng };
+      if (eng.conf < 75 && !job.cancelled) {
+        const hin = await first.ask({ id: p, w: img.w, h: img.h, gray: copy, lang: "hin" });
+        if (hin.conf > eng.conf + 8) best = { lang: "hin", res: hin };
+      }
+      lang = best.lang;
+      if (!job.cancelled) { done(p, img, best.res); queue.splice(queue.indexOf(p), 1); }
+    }
+    job.lang = lang;
+    const loop = async (worker) => {
+      while (queue.length && !job.cancelled) {
+        const p = queue.shift();
         const img = await renderGray(pdf, p);
         if (job.cancelled) break;
-        const res = await ask({ id: p, w: img.w, h: img.h, gray: img.gray });
-        pages[p - 1] = { w: img.pw, h: img.ph, lines: res.lines };
-        job.done++;
-        bus.emit("ocr-progress", { docId, done: job.done, total, eta: job.eta() });
+        done(p, img, await worker.ask({ id: p, w: img.w, h: img.h, gray: img.gray, lang }));
       }
       worker.terminate();
     };
-    try {
-      await Promise.all(Array.from({ length: n }, loop));
+      await Promise.all([loop(first), ...Array.from({ length: n - 1 }, () => loop(spawn()))]);
       if (job.cancelled) return null;
-      await store.kvSet(KEY(docId), { v: V, pages, at: Date.now() }).catch(() => {});
+      await store.kvSet(KEY(docId), { v: V, pages, lang, at: Date.now() }).catch(() => {});
       job.state = "done";
       bus.emit("ocr-done", { docId, ok: true });
       return pages;

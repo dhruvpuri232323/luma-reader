@@ -1,5 +1,6 @@
 // End-to-end test of Luma Reader in real Chromium (laptop + phone viewports):
-// (scanned.pdf is three pages of novel.pdf saved as pictures only — tests reading scanned books)
+// (scanned.pdf is three pages of novel.pdf saved as pictures only, hindi-scan.pdf a page of Hindi —
+//  tests reading scanned books; fake-translator.js stands in for the browser's built-in translator)
 // Page view, Book view, typography, dictionary fallbacks, highlights, listening
 // (device voice and the natural-voice pipeline with a stand-in model), words,
 // notes, settings, and two-device sync through an in-memory stand-in for Firestore.
@@ -72,7 +73,14 @@ async function routeServices(ctx) {
     if (NOT_IN_DICTIONARY.has(w) || /\s/.test(w)) return r.fulfill({ status: 404, contentType: "application/json", body: "{}" });
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(dictionary(w)) });
   });
+  await ctx.route(/api\.mymemory\.translated\.net/, (r) => {
+    const q = new URL(r.request().url()).searchParams.get("q") || "";
+    r.fulfill({ status: 200, headers: { "Access-Control-Allow-Origin": "*" }, contentType: "application/json", body: JSON.stringify({ responseStatus: 200, responseData: { translatedText: "[ऑनलाइन] " + q } }) });
+  });
   await ctx.route(/en\.wiktionary\.org/, (r) => {
+    if (decodeURIComponent(r.request().url()).includes("definition/पानी")) {
+      return r.fulfill({ status: 200, headers: { "Access-Control-Allow-Origin": "*" }, contentType: "application/json", body: JSON.stringify({ hi: [{ partOfSpeech: "Noun", language: "Hindi", definitions: [{ definition: "<a>water</a>" }, { definition: "rain" }] }] }) });
+    }
     const html = /\/page\/html\/([^/?#]+)/.exec(r.request().url());
     if (html) {
       const body = WIKTIONARY_HTML[decodeURIComponent(html[1])];
@@ -276,9 +284,12 @@ const crash = async (e) => {
 process.on("unhandledRejection", crash);
 process.on("uncaughtException", crash);
 
-async function newDevice(name, opts = {}) {
+async function newDevice(name, { translator = false, ...opts } = {}) {
   const ctx = await browser.newContext({ ...opts, serviceWorkers: "block", acceptDownloads: true });
   await routeServices(ctx);
+  // computers with Chrome/Edge have a built-in translator; phones don't
+  if (translator) await ctx.addInitScript({ path: FIX("fake-translator.js") });
+  else await ctx.addInitScript(() => { delete window.Translator; delete window.LanguageDetector; }); // like a phone: no built-in translator
   await ctx.exposeFunction("cloudWrite", cloudWrite);
   await ctx.exposeFunction("cloudPull", cloudPull);
   await ctx.addInitScript(initScript, { kokoroUrl: new URL("tests/fixtures/fake-kokoro.js", BASE).href });
@@ -355,7 +366,7 @@ async function settingsPage(pg, name) {
   if (await pg.locator(".set-nav").count()) await pg.locator(".set-nav-item", { hasText: name }).click();
 }
 
-const page = await newDevice("laptop", { viewport: { width: 1440, height: 900 } });
+const page = await newDevice("laptop", { viewport: { width: 1440, height: 900 }, translator: true });
 const laptop = page;
 
 // ═════════════ Library & layout ═════════════
@@ -1353,6 +1364,93 @@ await until(laptop, async () => (await (await import("/js/data/fulltext.js")).se
   () => ok(true, "a scanned book can be searched inside"), () => ok(false, "a scanned book can be searched inside"));
 ok(laptop.errors.length === 0, "no errors with scanned books" + (laptop.errors.length ? ": " + laptop.errors.join(" | ") : ""));
 
+// ═════════════ Translation: English ⇄ Hindi, a passage or a whole book ═════════════
+const river = await laptop.evaluate(async () => (await import("/js/data/store.js")).store.list("docs").find((d) => d.title === "The River Cottage")?.id);
+await laptop.goto(BASE + `#/read/${river}`);
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 15000 });
+await laptop.waitForTimeout(500);
+const selectIn = (pg, phrase) => pg.evaluate((phrase) => {
+  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bk-flow"), NodeFilter.SHOW_TEXT);
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    const i = n.data.indexOf(phrase);
+    if (i < 0) continue;
+    const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + phrase.length);
+    getSelection().removeAllRanges(); getSelection().addRange(r);
+    return true;
+  }
+  return false;
+}, phrase);
+await selectIn(laptop, "the old cottage by the river");
+await laptop.waitForSelector(".selbar.in", { timeout: 4000 }).catch(() => {});
+await laptop.waitForTimeout(700); // the toolbar follows the new selection
+await laptop.locator(".selbar-btn", { hasText: "Translate" }).click();
+await laptop.waitForSelector(".defcard .tr-text", { timeout: 8000 }).catch(() => {});
+const trCard = await laptop.locator(".defcard").innerText().catch(() => "");
+ok(/कुटिया/.test(trCard) && /नदी/.test(trCard) && /Translated on this device/.test(trCard), "select a passage and Translate: English → Hindi, on the device");
+ok(await laptop.locator('.defcard .tr-out[lang="hi"]').count() === 1, "the translation is marked as Hindi (Devanagari type, a Hindi voice)");
+await shot(laptop, "41-translate-card");
+await laptop.locator(".defcard .tr-actions .btn", { hasText: "Correct" }).click();
+await laptop.locator(".defcard .tr-edit textarea").fill("नदी किनारे की पुरानी कुटिया");
+await laptop.locator(".defcard .tr-edit .btn.primary").click();
+await laptop.keyboard.press("Escape");
+await laptop.waitForTimeout(300);
+await selectIn(laptop, "the old cottage by the river");
+await laptop.waitForSelector(".selbar.in", { timeout: 4000 }).catch(() => {});
+await laptop.waitForTimeout(700); // the toolbar follows the new selection
+await laptop.locator(".selbar-btn", { hasText: "Translate" }).click();
+await laptop.waitForSelector(".defcard .tr-text", { timeout: 8000 }).catch(() => {});
+ok((await laptop.locator(".defcard .tr-text").innerText().catch(() => "")) === "नदी किनारे की पुरानी कुटिया" && /Your correction/.test(await laptop.locator(".defcard .tr-note").innerText().catch(() => "")),
+  "your correction is remembered and used next time");
+await laptop.keyboard.press("Escape");
+await laptop.waitForTimeout(300);
+await wordCard("पानी");
+await laptop.waitForSelector(".defcard .tr-dict", { timeout: 8000 }).catch(() => {});
+const hiWord = await laptop.locator(".defcard").innerText().catch(() => "");
+ok(/water/.test(await laptop.locator(".defcard .tr-text").innerText().catch(() => "")) && /noun — water; rain/i.test(hiWord), "a Hindi word gives its English, with the Hindi → English dictionary");
+await laptop.keyboard.press("Escape");
+await laptop.waitForTimeout(300);
+// the whole book, then both side by side
+await laptop.locator('.reader-actions [data-action="translate"]').click();
+await laptop.waitForSelector(".tr-pop .btn.primary", { timeout: 8000 }).catch(() => {});
+ok(/English\s*→\s*हिन्दी/.test(await laptop.locator(".tr-pop .tr-pair").innerText().catch(() => "")), "an English book is translated into Hindi");
+await laptop.locator(".tr-pop .btn.primary").click();
+await laptop.waitForSelector(".tr-screen", { timeout: 8000 }).then(() => ok(true, "the whole book is translated first, behind one progress screen"), () => ok(false, "the whole book is translated first, behind one progress screen"));
+await laptop.waitForSelector(".tab-pane.active .bk-flow .bk-tr", { timeout: 60000 }).catch(() => {});
+await laptop.waitForTimeout(500);
+ok(await laptop.locator('.tab-pane.active .bk-flow .bk-tr[lang="hi"]').count() >= 4, "…then each paragraph shows with its Hindi translation under it");
+await shot(laptop, "42-translated-both");
+ok(await until(laptop, async () => (await import("/js/data/store.js")).store.list("settings").some((r) => r.kind === "translation"), null, { timeout: 5000 }).then(() => true, () => false),
+  "the translation is saved with your account, to read on your phone");
+await laptop.locator('.reader-actions [data-action="translate"]').click();
+await laptop.waitForSelector(".tr-pop .tr-modes", { timeout: 8000 });
+await laptop.locator(".tr-pop .tr-modes button").nth(2).click();
+await laptop.waitForTimeout(800);
+await laptop.keyboard.press("Escape");
+ok(await laptop.evaluate(() => document.querySelector(".tab-pane.active .bk-flow").lang) === "hi" && /[\u0900-\u097F]/.test(await laptop.locator(".tab-pane.active .bk-flow p.bk-b").first().innerText()),
+  "or read the Hindi on its own");
+ok(await laptop.evaluate(() => Boolean(window.__luma.reader.tabs.get(window.__luma.reader.active).readModel)), "Listen then reads the Hindi (in a Hindi voice)");
+await shot(laptop, "43-translated-only");
+await laptop.evaluate(async () => (await import("/js/ui/translatepanel.js")).setBookTranslation(window.__luma.reader.tabs.get(window.__luma.reader.active), "original"));
+// a Hindi book: read from its scanned page, then translated into English
+await laptop.goto(BASE + "#/library");
+await laptop.waitForSelector("#view-library .view-head h1");
+await laptop.setInputFiles("#file-input", [FIX("hindi-scan.pdf")]);
+await until(laptop, async () => (await import("/js/data/store.js")).store.list("docs").some((d) => d.title === "hindi-scan"), null, { timeout: 10000 }).catch(() => {});
+const hindiDoc = await laptop.evaluate(async () => (await import("/js/data/store.js")).store.list("docs").find((d) => d.title === "hindi-scan")?.id);
+if (!(await laptop.locator(".tr-screen, .ocr-card").count())) await laptop.goto(BASE + `#/read/${hindiDoc}`);
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 120000 }).catch(() => {});
+await laptop.waitForTimeout(500);
+const hindiText = (await laptop.locator(".tab-pane.active .bk-flow").innerText().catch(() => "")).replace(/\s+/g, " ");
+ok(/नदी के किनारे एक पुरानी कुटिया थी/.test(hindiText), "a scanned Hindi page is read in Hindi (the right reading model is picked by itself)");
+await laptop.locator('.reader-actions [data-action="translate"]').click();
+await laptop.waitForSelector(".tr-pop .btn.primary", { timeout: 8000 }).catch(() => {});
+ok(/हिन्दी\s*→\s*English/.test(await laptop.locator(".tr-pop .tr-pair").innerText().catch(() => "")), "a Hindi book is translated into English");
+await laptop.locator(".tr-pop .btn.primary").click();
+await laptop.waitForSelector('.tab-pane.active .bk-flow .bk-tr[lang="en"]', { timeout: 60000 }).catch(() => {});
+ok((await laptop.locator('.tab-pane.active .bk-flow .bk-tr[lang="en"]').allInnerTexts()).join(" ").includes("river"), "…with the English under each Hindi paragraph");
+await shot(laptop, "44-hindi-book-english");
+ok(laptop.errors.length === 0, "no errors with translation" + (laptop.errors.length ? ": " + laptop.errors.join(" | ") : ""));
+
 // Google Drive: books and everything else, with no Firebase
 await laptop.goto(BASE + "#/settings");
 await settingsPage(laptop, "Google Drive");
@@ -1385,6 +1483,19 @@ await phone.setInputFiles("#file-input", [FIX("story.epub")]);
 await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 }).catch(() => {});
 if (!(await phone.locator(".tab-pane.active .bookview:not([hidden]) .bk-b").count())) { await phone.goto(BASE + `#/read/${ids["The River Cottage"]}`); await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 }); }
 await shot(phone, "30-phone-epub");
+await until(phone, async () => (await import("/js/data/store.js")).store.list("settings").some((r) => r.kind === "translation"), null, { timeout: 15000 }).catch(() => {});
+await phone.evaluate(async () => { const id = (await import("/js/data/store.js")).store.list("docs").find((d) => d.title === "The River Cottage")?.id; location.hash = `#/read/${id}`; });
+await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 15000 }).catch(() => {});
+await phone.evaluate(async () => (await import("/js/ui/translatepanel.js")).setBookTranslation(window.__luma.reader.tabs.get(window.__luma.reader.active), "both"));
+await phone.waitForSelector('.tab-pane.active .bk-flow .bk-tr[lang="hi"]', { timeout: 10000 }).then(
+  () => ok(true, "the book translated on the laptop reads in Hindi on the phone"), () => ok(false, "the book translated on the laptop reads in Hindi on the phone"));
+await shot(phone, "30b-phone-translated");
+await phone.evaluate(async () => (await import("/js/ui/translatepanel.js")).setBookTranslation(window.__luma.reader.tabs.get(window.__luma.reader.active), "original"));
+await phone.evaluate(async () => (await import("/js/ui/definition.js")).showTranslation("Thank you for the tea", { left: 40, top: 300, right: 200, bottom: 320, width: 160, height: 20 }));
+await phone.waitForSelector(".defcard .tr-text", { timeout: 8000 }).catch(() => {});
+ok(/Translated online/.test(await phone.locator(".defcard .tr-note").innerText().catch(() => "")), "on the phone, a passage is translated online (no built-in translator)");
+await shot(phone, "30c-phone-translate-card");
+await phone.evaluate(async () => (await import("/js/ui/definition.js")).hideDefinition());
 await phone.goto(BASE + "#/library");
 await phone.locator(".book", { hasText: "The River Cottage" }).locator(".card-more").click();
 await phone.locator(".menu-item", { hasText: "Listen from where you stopped" }).click();

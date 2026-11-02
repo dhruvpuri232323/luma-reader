@@ -830,3 +830,37 @@ details.ph-words:not([open]) > summary::after { transform: none; }
 .ocr-count { margin: 0; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ocr-actions { justify-content: center; margin-top: 4px; }
 @media (prefers-reduced-motion: reduce) { .ocr-icon { animation: none; } }
+
+/* ───────── translation ───────── */
+/* Devanagari (Hindi, Marathi…) in the book's own style of type */
+:lang(hi), :lang(mr), :lang(ne) { font-family: "Noto Serif Devanagari", "Nirmala UI", "Mangal", "Kohinoor Devanagari", serif; }
+.tr :lang(hi), .def-body :lang(hi), .tr-pair :lang(hi) { font-family: "Noto Sans Devanagari", "Nirmala UI", "Mangal", sans-serif; }
+.bk-flow :lang(hi), .bk-flow:lang(hi) { line-height: 1.75; }
+/* "Both": each paragraph, then its translation */
+.bk-flow .bk-tr { margin: .25em 0 .9em; padding-left: .85em; text-indent: 0; border-left: 2px solid color-mix(in srgb, var(--accent) 50%, transparent); color: color-mix(in srgb, var(--paper-ink, var(--ink)) 80%, var(--accent)); }
+.bk-flow .bk-tr-h { font-size: .92em; font-weight: 600; margin: -.2em 0 1em; }
+.bookview[data-tr="both"] .bk-flow p.bk-b { margin-bottom: 0; }
+.tr-screen .ocr-icon { animation-duration: 3s; }
+
+/* the Translate card */
+.tr { display: grid; gap: 10px; }
+.tr-pair { display: inline-flex; align-items: center; gap: 8px; margin: 0; padding: 4px 12px; border-radius: 99px; background: var(--surface-2); font-size: 12.5px; font-weight: 700; color: var(--ink-2); justify-self: start; }
+.tr-pair.big { font-size: 14px; padding: 6px 14px; flex-wrap: wrap; }
+.tr-pair .link { margin-left: 6px; font-weight: 500; }
+.tr-arrow { color: var(--accent); }
+.tr-src { margin: 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--line-2); color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.5; white-space: pre-line; }
+.tr-src.long { max-height: 7.5em; overflow: auto; }
+.tr-out { min-height: 2em; }
+.tr-text { margin: 0; font: 400 18px/1.55 var(--serif); color: var(--ink); white-space: pre-line; }
+.tr-out:lang(hi) .tr-text { font-family: "Noto Serif Devanagari", "Nirmala UI", "Mangal", serif; font-size: 19px; line-height: 1.7; }
+.tr-note { margin: 0; font-size: 11.5px; color: var(--muted); }
+.tr-note:empty { display: none; }
+.tr-actions:empty, .tr-dl:empty { display: none; }
+.tr-dl { display: grid; gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.tr-dl p { margin: 0; }
+.tr-edit { display: grid; gap: 8px; }
+.tr-dict-line { margin: 0; font-size: var(--fs-sm); color: var(--ink-2); }
+.tr-pop { width: min(340px, calc(100vw - 16px)); }
+.tr-pop-body { display: grid; gap: 10px; padding: 4px 4px 6px; }
+.tr-pop-body p { margin: 0; }
+.tr-modes { justify-self: start; }

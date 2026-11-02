@@ -47,6 +47,8 @@ export class Tab {
   }
 
   get doc() { return store.get("docs", this.docId); }
+  /** When Book view shows only the translation, read-aloud reads that. */
+  get readModel() { return this.mode === "book" && this.book?.tr.mode === "translation" && this.book.tr.map ? this.book.viewModel : null; }
   get kind() { return this.doc?.kind || "pdf"; }
   get hasPages() { return this.kind === "pdf"; }
   get page() { return this.viewer?.currentPageNumber || 1; }
@@ -264,12 +266,13 @@ export class Tab {
    */
   async #checkScanned() {
     await this.model.ready();
-    if (!this.model.looksScanned || this.destroyed) return "text";
+    const garbled = this.model.looksGarbled; // Hindi in an old font: read the page images instead
+    if ((!this.model.looksScanned && !garbled) || this.destroyed) return "text";
     this.scanned = true;
     const saved = await savedOcr(this.docId);
     if (saved) { this.#useOcr(saved, { fresh: false }); return "ready"; }
     if (store.settings().readScans === false) return "off";
-    this.ocrJob = readScanned(this.docId, this.pdf);
+    this.ocrJob = readScanned(this.docId, this.pdf, { lang: garbled ? "hin" : null });
     bus.emit("tab-ocr", this);
     this.ocrJob.promise.then((pages) => { if (pages && !this.destroyed) this.#useOcr(pages, { fresh: true }); }).catch(() => bus.emit("tab-ocr", this));
     return "reading";

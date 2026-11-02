@@ -14,7 +14,8 @@ import {
   COLORS, rangeText, renderPageHighlights, rerenderAll, createHighlight, createTextHighlight, highlightAt, annotationsFor,
   bookmarksFor, isBookmarked, toggleBookmark,
 } from "./annotate.js";
-import { showDefinition, hideDefinition } from "../ui/definition.js";
+import { showDefinition, hideDefinition, showTranslation } from "../ui/definition.js";
+import { translatePopover } from "../ui/translatepanel.js";
 import { openResearch } from "../ui/research.js";
 import { feelPopover } from "../ui/feelpanel.js";
 import { lightPopover } from "../ui/lightswitch.js";
@@ -113,6 +114,11 @@ export function mountReader(root) {
     toast(store.settings().readScans === false
       ? "This PDF is scanned page images. Turn on Settings → Reading → “Read scanned books” to read it as text."
       : "This PDF's scanned pages couldn't be read as text. Showing the original pages.");
+  });
+  bus.on("tr-done", ({ docId, ok, cancelled, error }) => {
+    if (cancelled) return;
+    if (!ok) toast(error || "The translation stopped.", { tone: "warn" });
+    renderActions();
   });
   // scanned books: read once, then everything works
   bus.on("ocr-done", ({ docId, ok, cancelled }) => {
@@ -373,6 +379,7 @@ function renderActions() {
     narrow ? null : actionBtn("search", "Search in book (Ctrl+F)", () => togglePanel("search"), { on: R.panel === "search" }),
     actionBtn("toc", "Contents, bookmarks & notes", () => togglePanel(R.panel && R.panel !== "search" ? R.panel : "contents"), { on: R.panel && R.panel !== "search" }),
     narrow ? null : actionBtn("bookmark", bm ? "Remove bookmark (B)" : "Bookmark this page (B)", () => bookmarkCurrent(), { on: bm }),
+    narrow ? null : actionBtn("translate", "Translate this book", (e) => translatePopover(e.currentTarget, tab), { on: tab?.mode === "book" && tab.book?.tr.mode !== "original" && Boolean(tab.book?.tr.map) }),
   ];
   const secondary = [
     actionBtn("type", "Fonts, size & theme", (e) => appearancePopover(e.currentTarget)),
@@ -409,6 +416,7 @@ function moreMenu(anchor) {
     narrow ? { label: "Fonts, size & theme", icon: "type", onClick: () => appearancePopover(anchor) } : null,
     narrow && tab?.hasPages !== false ? { label: R.compare ? "Close comparison" : "Compare with another PDF", icon: "compare", onClick: toggleCompare } : null,
     narrow ? { label: "Focus mode", icon: "focus", onClick: () => setFocus(true) } : null,
+    narrow && ready ? { label: "Translate this book…", icon: "translate", onClick: () => translatePopover(anchor, tab) } : null,
     narrow ? "-" : null,
     ready ? { label: R.auto?.on ? "Stop auto-scroll (A)" : "Auto-scroll at reading speed (A)", icon: "down", checked: R.auto?.on, onClick: () => toggleAuto() } : null,
     ready && book ? { label: "Reading ruler (R)", icon: "ruler", checked: Boolean(s.ruler), onClick: () => toggleRuler() } : null,
@@ -779,7 +787,11 @@ function setFocus(on, { quiet = false } = {}) {
 
 let selBar = null;
 function hideSelBar() { selBar?.remove(); selBar = null; }
-window.addEventListener("hashchange", () => hideSelBar()); // leaving the book leaves its selection behind
+window.addEventListener("hashchange", () => { // leaving the book leaves its selection behind
+  hideSelBar();
+  const sel = document.getSelection();
+  if (sel && !sel.isCollapsed && R.root?.contains(sel.anchorNode)) sel.removeAllRanges();
+});
 
 function wireSelection() {
   const stage = $(".stage", R.root);
@@ -844,6 +856,18 @@ function showSelBar(range, text) {
         hideSelBar();
         showDefinition(text, rect, { docId: tab.docId, title: tab.doc?.title, page, context: node.nodeType === 3 ? contextAround(node, text) : "" }, { sticky: true });
       } }, icon("words", 16), el("span", {}, "Define")));
+  }
+  if (words <= 400) { // a word, a sentence, a paragraph — English ⇄ your other language
+    selBar.append(el("button.selbar-btn", {
+      title: "Translate (T)",
+      onmousedown: (e) => e.preventDefault(),
+      onclick: () => {
+        const rect = range.getBoundingClientRect();
+        const node = range.startContainer;
+        const page = Number(node.parentElement?.closest(".page")?.dataset.pageNumber || node.parentElement?.closest(".bk-b")?.dataset.page || tab?.currentPage() || 1);
+        hideSelBar();
+        showTranslation(range.toString(), rect, tab ? { docId: tab.docId, title: tab.doc?.title, page } : null);
+      } }, icon("translate", 16), el("span", {}, "Translate")));
   }
   if (words <= 12) {
     selBar.append(el("button.selbar-btn", {
@@ -1056,6 +1080,10 @@ function wireKeys() {
     else if ((k === "r" || k === "R") && book && !e.shiftKey) toggleRuler();
     else if (k === "a" || k === "A") toggleAuto();
     else if (k === "k" || k === "K") { e.preventDefault(); lookUpSelection(); }
+    else if ((k === "t" || k === "T") && !e.shiftKey) {
+      const sel = document.getSelection();
+      if (sel && !sel.isCollapsed && sel.toString().trim()) { e.preventDefault(); const r = sel.getRangeAt(0); hideSelBar(); showTranslation(sel.toString(), r.getBoundingClientRect(), tab ? { docId: tab.docId, page: tab.currentPage() } : null); }
+    }
   });
 }
 

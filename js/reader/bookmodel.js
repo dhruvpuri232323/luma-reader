@@ -13,6 +13,10 @@ const M_OPEN = "\uE000", M_CLOSE = "\uE001";
 const MARKS = /\uE000([^\uE001]*)\uE001/g;
 const stripMarks = (s) => s.replace(MARKS, "$1");
 
+// The commonest Hindi words as old Kruti Dev / DevLys fonts type them (का के की है में और से को कि था पर…)
+const KRUTI = new Set("dk ds dh gS esa vkSj ls dks fd Fkk ij gSa Hkh ;g og ugha rFkk tks fy, djrs dj gq, Fks gks bl mu vius viuh dgk vkt ;s os".split(" "));
+const EN_COMMON = new Set("the of and to a in is it that was for on are as with he she his her they be at by this had not but from or have an which you were all their".split(" "));
+
 export class BookModel {
   constructor(pdf) {
     this.pdf = pdf;
@@ -50,8 +54,12 @@ export class BookModel {
       // the line's type size: the taller words span ascender to descender, about the font size
       // (not the very tallest, so one bracket doesn't make a heading)
       const hs = l.words.filter((x) => x[4].length > 1).map((x) => x[3]).sort((a, b) => a - b);
-      const size = (hs[Math.min(hs.length - 1, Math.floor(hs.length * 0.85))] || l.h) * h * 1.05;
-      return { x: l.x * w, y: h - (l.y + l.h) * h, size, text: l.words.map((x) => x[4]).join(" "), end: (l.x + l.w) * w };
+      // Devanagari and its cousins hang every word from one line, so the middle word is the type size;
+      // in Latin type the middle word is often just x-height, so take a taller one
+      const hanging = /[\u0900-\u0A7F]/.test(l.words.map((x) => x[4]).join(""));
+      const size = (hs[hanging ? hs.length >> 1 : Math.min(hs.length - 1, Math.floor(hs.length * 0.85))] || l.h) * h * (hanging ? 1.25 : 1.05);
+      const text = l.words.map((x) => x[4]).join(" ").replace(/\s+([।॥,;:!?)\]”’])/g, "$1"); // "था ।" → "था।"
+      return { x: l.x * w, y: h - (l.y + l.h) * h, size, text, end: (l.x + l.w) * w };
     });
     return { lines: lines.filter((l) => /[\p{L}\p{N}]/u.test(l.text)), w, h };
   }
@@ -102,7 +110,7 @@ export class BookModel {
       for (let p = 1; p <= n && sample.length < 24; p += step) sample.push(p);
       const counts = new Map();
       const sizes = new Map();
-      let chars = 0, words = 0, textPages = 0;
+      let chars = 0, words = 0, textPages = 0, legacy = 0, english = 0, tokens = 0;
       const read = await Promise.all(sample.map((p) => this.lines(p))); // all at once — the PDF engine queues them
       for (const { lines } of read) {
         let pc = 0;
@@ -110,7 +118,9 @@ export class BookModel {
           const k = Math.round(l.size * 2) / 2;
           sizes.set(k, (sizes.get(k) || 0) + l.text.length);
           pc += l.text.length;
-          words += l.text.split(/\s+/).filter(Boolean).length;
+          const ws = l.text.split(/\s+/).filter(Boolean);
+          words += ws.length;
+          for (const w of ws) { tokens++; if (KRUTI.has(w)) legacy++; if (EN_COMMON.has(w.toLowerCase())) english++; }
         }
         chars += pc;
         if (pc > 200) textPages++;
@@ -127,6 +137,8 @@ export class BookModel {
       this.avgWords = Math.max(30, words / sample.length);
       this.textPages = textPages;
       this.sampleCount = sample.length;
+      // Hindi typed in an old non-Unicode font (Kruti Dev, DevLys): its "text" is Latin gibberish
+      this.looksGarbled = !this.ocr && tokens > 40 && legacy / tokens > 0.08 && english / tokens < 0.1;
     })();
     return this.readyPromise;
   }
@@ -196,7 +208,7 @@ export class BookModel {
         const gap = prev.y - l.y;
         const lineGap = Math.max(l.size, prev.size) * 1.85;
         const indented = l.x - prev.x > l.size * 1.2;
-        const ended = /[.!?:"”’)]$/.test(stripMarks(prev.text).trim());
+        const ended = /[.!?:"”’)।॥]$/.test(stripMarks(prev.text).trim());
         if (gap > lineGap || gap < -2 || (indented && ended) || LIST.test(t) || (ended && prev.end < para.maxEnd - l.size * 6)) breakHere = true;
       }
       if (breakHere) {
@@ -238,7 +250,7 @@ export class BookModel {
         const k = normLine(l.text);
         return !(i < 2 && (this.repeated.has(k) || PAGE_NO.test(k))) && l.size > body * 0.88;
       });
-      if (tail && tail.size < body * 1.22 && (!/[.!?:"”’)]$/.test(stripMarks(tail.text).trim()) || /^\p{Ll}/u.test(first.text))) first.cont = true;
+      if (tail && tail.size < body * 1.22 && (!/[.!?:"”’)।॥]$/.test(stripMarks(tail.text).trim()) || /^\p{Ll}/u.test(first.text))) first.cont = true;
     }
     return blocks;
   }

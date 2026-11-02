@@ -32,6 +32,8 @@ export const DEFAULT_SETTINGS = {
   pageSounds: true, // page-turn sounds (each book can still turn its own off)
   trackReading: true, // measure reading time, pages and pace (for the timer and Insights)
   readScans: true, // read scanned PDFs with on-device text recognition
+  trLang: "hi", // translation: English ⇄ this language
+  trOnline: true, // use the free online translator when this device can't translate
   readGoal: 20, // minutes a day
   ruler: false,
   warm: "off", // off | night | on

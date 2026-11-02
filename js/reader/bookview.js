@@ -16,6 +16,7 @@ import { wordAtPoint } from "./lookup.js";
 import { feelFor, playTurn } from "../core/bookfeel.js";
 import { beginTurn } from "./pageturn.js";
 import { etaText } from "./ocr.js";
+import { translatedModel, bookLanguage, pairFor, savedTranslation } from "./booktranslate.js";
 
 const WPM_KEY = "luma.wpm";
 const MEASURE = { narrow: 27, balanced: 32, wide: 40 }; // max text column width, in em
@@ -33,6 +34,7 @@ export class BookView {
   constructor(tab) {
     this.tab = tab;
     this.model = tab.model;
+    this.tr = { mode: "original", map: null, from: null, to: null }; // translation: original | both | translation
     this.chunk = -1; // paged: the chunk on screen · scroll: chunk at the top of the screen
     this.loaded = []; // scroll mode: chunk indices currently in the page, in order
     this.spread = 0;
@@ -79,6 +81,24 @@ export class BookView {
   }
 
   get visible() { return !this.el.hidden && this.el.clientWidth > 0; }
+
+  /** The text shown: the book itself, or its translation. */
+  get viewModel() {
+    if (this.tr.mode !== "translation" || !this.tr.map) return this.model;
+    if (this.trModel?.map !== this.tr.map || this.trModel.base !== this.model) this.trModel = { map: this.tr.map, base: this.model, model: translatedModel(this.model, this.tr.map) };
+    return this.trModel.model;
+  }
+
+  /** Show the original, the translation, or both — paragraph by paragraph. */
+  async setTranslation({ mode, map = this.tr.map, from = this.tr.from, to = this.tr.to }) {
+    const page = this.chunk >= 0 || this.loaded.length ? this.page : this.tab.currentPage?.() || 1;
+    this.tr = { mode: map ? mode : "original", map, from, to };
+    this.flow.lang = this.tr.mode === "translation" ? to : this.tr.from && this.tr.mode === "original" ? this.tr.from : (this.bookLang || "en");
+    this.el.dataset.tr = this.tr.mode;
+    this.chunk = -1; this.loaded = []; this.indexCache.clear();
+    if (this.scroll) setKids(this.flow);
+    if (!this.el.hidden && this.tab.mode === "book") await this.goToPage(page, { animate: false });
+  }
 
   pagesPerChunk() { return clamp(Math.round(22000 / this.model.avgChars), 3, 40); }
   chunkOf(p) { return Math.floor((p - 1) / this.pagesPerChunk()); }
@@ -169,12 +189,12 @@ export class BookView {
     this.el.hidden = false;
     this.#setStatus("Setting the pages…");
     await this.model.ready();
-    if (this.model.looksScanned) {
+    if (this.model.looksScanned || this.model.looksGarbled) {
       await this.tab.scanCheck?.catch(() => {});
       let job = this.tab.ocrJob;
       // stopped earlier: choosing Book view again reads it now
       if (this.model.looksScanned && job?.state !== "running" && store.settings().readScans !== false) job = this.tab.readScannedNow() || job;
-      if (this.model.looksScanned && job?.state === "running") {
+      if ((this.model.looksScanned || this.model.looksGarbled) && job?.state === "running") {
         // read the whole book first, then show it
         this.#showReading(job);
         const pages = await job.promise.catch(() => null);
@@ -188,6 +208,7 @@ export class BookView {
         : "This PDF is made of scanned page images, so there's no text to set as a book. Page view shows it as it is.", true);
       return false;
     }
+    await this.#restoreTranslation().catch(() => {});
     this.#applyGeometry();
     const wantScroll = this.geom.scroll;
     if (wantScroll !== this.scroll || this.chunk < 0) { this.scroll = wantScroll; this.chunk = -1; this.loaded = []; }
@@ -230,6 +251,50 @@ export class BookView {
     this.el.append(this.readingEl);
   }
 
+  /** Translating the whole book: one progress screen, then the book in both languages. */
+  showTranslating(job) {
+    this.hideTranslating();
+    const bar = el("span.ocr-bar-fill");
+    const count = el("p.ocr-count");
+    const card = el("div.ocr-card", { role: "status", "aria-live": "polite" },
+      el("div.ocr-icon", { "aria-hidden": "true" }, icon("translate", 28)),
+      el("h3", {}, "Translating your book"),
+      el("p.ocr-sub", {}, "Every paragraph is translated whole, on this computer. When it's done you'll see the original and the translation side by side — and it will be on your phone too."),
+      el("div.ocr-bar", {}, bar),
+      count,
+      el("div.row.wrap.ocr-actions", {},
+        el("button.btn.sm.ghost", { type: "button", onclick: () => job.cancel() }, "Stop")));
+    const update = () => {
+      bar.style.width = (job.total ? (job.done / job.total) * 100 : 0).toFixed(1) + "%";
+      count.textContent = job.total ? `${job.done} of ${job.total} paragraphs · ${etaText(job.eta())}` : "Gathering the paragraphs…";
+    };
+    update();
+    this.offTranslating = bus.on("tr-progress", (e) => { if (e.docId === this.tab.docId) update(); });
+    this.translatingEl = el("div.ocr-screen.tr-screen", {}, card);
+    this.el.append(this.translatingEl);
+  }
+
+  hideTranslating() {
+    this.offTranslating?.();
+    this.offTranslating = null;
+    this.translatingEl?.remove();
+    this.translatingEl = null;
+  }
+
+  /** Come back to a book the way you left it: original, translation, or both. */
+  async #restoreTranslation() {
+    let mode = "original";
+    try { mode = localStorage.getItem(`luma.tr.${this.tab.docId}`) || "original"; } catch {}
+    if (mode === "original" || this.tr.map) return;
+    this.tab.bookLang ||= await bookLanguage(this.model).catch(() => "en");
+    const pair = pairFor(this.tab.bookLang);
+    const t = await savedTranslation(this.tab.docId, pair.to).catch(() => null);
+    if (!t) return;
+    this.tr = { mode, map: t.map, from: t.from, to: t.to };
+    this.flow.lang = mode === "translation" ? t.to : t.from;
+    this.el.dataset.tr = mode;
+  }
+
   #hideReading() {
     this.offReading?.();
     this.offReading = null;
@@ -250,7 +315,14 @@ export class BookView {
     let words = 0;
     let afterHeading = false;
     let lastP = null;
-    const pages = await Promise.all(Array.from({ length: b - a + 1 }, (_, n) => this.model.page(a + n)));
+    const pages = await Promise.all(Array.from({ length: b - a + 1 }, (_, n) => this.viewModel.page(a + n)));
+    const both = this.tr.mode === "both" && this.tr.map;
+    const trLang = this.tr.to;
+    // the translation of a paragraph or heading, under it (side by side, paragraph by paragraph)
+    const pair = (blk, p, tag = "p") => {
+      const t = both ? this.tr.map.get(blk.id) : null;
+      return t ? el(`${tag}.bk-tr` + (blk.type === "h" ? ".bk-tr-h" : ""), { lang: trLang, dataset: { for: blk.id, page: p } }, t) : null;
+    };
     for (let p = a; p <= b; p++) {
       const blocks = pages[p - a];
       for (const blk of blocks) {
@@ -265,13 +337,14 @@ export class BookView {
           node = el("div.bk-b.bk-break", { dataset: { bid: blk.id, page: p }, "aria-hidden": "true" });
           afterHeading = false;
         } else if (blk.type === "quote") {
-          node = el("blockquote.bk-b.bk-quote", { dataset: { bid: blk.id, page: p } }, blk.text);
+          node = el("blockquote.bk-b.bk-quote", { dataset: { bid: blk.id, page: p }, lang: blk.translated ? trLang : null }, blk.text);
           afterHeading = false;
         } else if (blk.type === "h") {
-          node = el(`h${blk.level}.bk-b.bk-h`, { dataset: { bid: blk.id, page: p } }, blk.text);
+          node = el(`h${blk.level}.bk-b.bk-h`, { dataset: { bid: blk.id, page: p }, lang: blk.translated ? trLang : null }, blk.text);
           afterHeading = blk.level === 2 ? "chapter" : "section";
         } else {
-          if (blk.cont && lastP && lastP.parentNode === frag && frag.lastChild === lastP) {
+          const trailing = frag.lastChild?.classList?.contains("bk-tr") && frag.lastChild.dataset.for === lastP?.dataset.bid; // "both": the translation sits after its paragraph
+          if (blk.cont && lastP && lastP.parentNode === frag && (frag.lastChild === lastP || trailing)) {
             // paragraph runs on from the previous PDF page: continue it seamlessly
             const span = el("span.bk-b.bk-cont", { dataset: { bid: blk.id, page: p } }, blk.text);
             addNotes(span, blk);
@@ -279,14 +352,18 @@ export class BookView {
             words += wordCount(blk.text);
             continue;
           }
-          node = el("p.bk-b" + (blk.cont ? ".cont" : "") + (afterHeading ? ".first" : "") + (afterHeading === "chapter" && blk.text.length >= 120 && /^[\p{L}\p{N}]/u.test(blk.text) ? ".drop" : ""),
-            { dataset: { bid: blk.id, page: p } }, blk.text);
+          node = el("p.bk-b" + (blk.cont ? ".cont" : "") + (afterHeading ? ".first" : "") + (afterHeading === "chapter" && blk.text.length >= 120 && /^[\p{L}\p{N}]/u.test(blk.text) && !both ? ".drop" : ""),
+            { dataset: { bid: blk.id, page: p }, lang: blk.translated ? trLang : null }, blk.text);
           addNotes(node, blk);
           lastP = node;
           afterHeading = false;
         }
         words += wordCount(blk.text || "");
         frag.append(node);
+        if (both && (blk.type === "p" || blk.type === "h" || blk.type === "quote")) {
+          const t = pair(blk, p, blk.type === "h" ? "div" : "p");
+          if (t) { frag.append(t); words += wordCount(t.textContent); }
+        }
       }
     }
     return { frag, words };
@@ -310,7 +387,7 @@ export class BookView {
     this.#renderFigures();
     const [a] = this.loadedRange;
     this.chapterBefore = "";
-    this.model.headingBefore(a - 1).then((t) => { this.chapterBefore = t; this.#updateRunning(); }).catch(() => {});
+    this.viewModel.headingBefore(a - 1).then((t) => { this.chapterBefore = t; this.#updateRunning(); }).catch(() => {});
     this.refreshHighlights();
     this.refreshVocab();
     this.refreshHard();

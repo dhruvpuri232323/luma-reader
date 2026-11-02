@@ -380,11 +380,22 @@ export function currentSystemVoice() {
 const keep = new Set(); // Chrome drops utterances that aren't referenced → onend never fires
 
 /** Speak with a device voice. Several can be queued; each starts the moment the previous one ends. */
-export function speakSystem(text, { rate = prefs.rate, voiceId, pitch = 1, onBoundary, onStart } = {}) {
+/** The best device voice for another language ("hi" → a Hindi voice), or null. */
+export function voiceForLang(lang) {
+  if (!("speechSynthesis" in window) || !lang) return null;
+  const want = lang.toLowerCase();
+  const list = speechSynthesis.getVoices().filter((v) => (v.lang || "").toLowerCase().replace("_", "-").startsWith(want));
+  const rank = (v) => (/natural|neural|online/i.test(v.name) ? 3 : 0) + (/google/i.test(v.name) ? 2 : 0) + (v.localService ? 1 : 0);
+  return list.sort((a, b) => rank(b) - rank(a))[0] || null;
+}
+
+export function speakSystem(text, { rate = prefs.rate, voiceId, pitch = 1, onBoundary, onStart, lang } = {}) {
   if (!("speechSynthesis" in window)) return { done: Promise.resolve(false), stop() {} };
   const u = new SpeechSynthesisUtterance(text);
-  const v = (voiceId && systemVoices().find((x) => x.id === voiceId)) || currentSystemVoice();
-  if (v) { u.voice = v.v; u.lang = v.v.lang; }
+  const other = lang && !/^en\b/i.test(lang);
+  const v = other ? null : (voiceId && systemVoices().find((x) => x.id === voiceId)) || currentSystemVoice();
+  if (other) { const lv = voiceForLang(lang); u.lang = lv?.lang || lang; if (lv) u.voice = lv; }
+  else if (v) { u.voice = v.v; u.lang = v.v.lang; }
   u.rate = rate;
   u.pitch = Math.max(0.5, Math.min(1.6, pitch));
   if (onBoundary) u.onboundary = (e) => { if (e.name !== "sentence") onBoundary(e.charIndex); };
@@ -407,9 +418,10 @@ export function stopAll() {
 }
 
 /** Say a single word or short phrase with the best voice available right now. */
-export async function speakOnce(text) {
+export async function speakOnce(text, { lang } = {}) {
   bus.emit("voice-interrupt");
   stopAll();
+  if (lang && !/^en\b/i.test(lang)) return speakSystem(text, { rate: 0.95, lang }).done; // the natural voice speaks English only
   if (prefs.engine === "natural" && nat.status === "ready") {
     try { return await playPcm(await synthNatural(text, prefs.natural, 0.95, { urgent: true })).done; } catch { /* fall through */ }
   }
