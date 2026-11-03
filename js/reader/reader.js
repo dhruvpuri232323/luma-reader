@@ -19,6 +19,7 @@ import { translatePopover } from "../ui/translatepanel.js";
 import { openResearch } from "../ui/research.js";
 import { feelPopover } from "../ui/feelpanel.js";
 import { lightPopover } from "../ui/lightswitch.js";
+import { renderNavigator, bookStructure, neighbour, goToEntry } from "./navigator.js";
 import { attachActivity } from "../data/activity.js";
 import { timerChip } from "../ui/timer.js";
 import { feelFor, EDITIONS } from "../core/bookfeel.js";
@@ -90,10 +91,12 @@ export function mountReader(root) {
   wireSelection();
   wireGestures();
   wireKeys();
+  wireCalm();
 
   bus.on("tab-state", (tab) => { renderPaneState(tab); if (tab.docId === R.active) { renderTabs(); renderBottom(); renderActions(); } });
   bus.on("tab-page", (tab) => { if (tab.docId === R.active) { renderBottom(); updateBookmarkButton(); if (R.panel === "bookmarks") renderPanel(); } });
   bus.on("tab-scale", (tab) => tab.docId === R.active && renderBottom());
+  bus.on("structure", (tab) => { tab.marks = null; if (tab.docId === R.active) renderBottom(); });
   bus.on("tab-rotation", (tab) => rerenderAll(tab));
   bus.on("tab-mode", (tab) => {
     if (tab.docId !== R.active) return;
@@ -377,7 +380,7 @@ function renderActions() {
   const items = [
     actionBtn("headphones", player.active ? "Stop listening (L)" : "Listen — read aloud (L)", () => toggleListen(), { on: player.active }),
     narrow ? null : actionBtn("search", "Search in book (Ctrl+F)", () => togglePanel("search"), { on: R.panel === "search" }),
-    actionBtn("toc", "Contents, bookmarks & notes", () => togglePanel(R.panel && R.panel !== "search" ? R.panel : "contents"), { on: R.panel && R.panel !== "search" }),
+    actionBtn("toc", "Chapters, bookmarks & notes (C)", () => togglePanel(R.panel && R.panel !== "search" ? R.panel : "contents"), { on: R.panel && R.panel !== "search" }),
     narrow ? null : actionBtn("bookmark", bm ? "Remove bookmark (B)" : "Bookmark this page (B)", () => bookmarkCurrent(), { on: bm }),
     narrow ? null : actionBtn("translate", "Translate this book", (e) => translatePopover(e.currentTarget, tab), { on: tab?.mode === "book" && tab.book?.tr.mode !== "original" && Boolean(tab.book?.tr.map) }),
   ];
@@ -467,8 +470,9 @@ function renderBottom() {
     onkeydown: (e) => { if (e.key === "Enter") { tab.goTo(Number(e.target.value)); e.target.blur(); } },
   });
   const scale = tab.viewer?.currentScale || 1;
+  syncStage();
   setKids(foot,
-    el("div.progress-line", { style: { "--p": total ? page / total : 0 } }),
+    scrubber(tab, page, total),
     (R.timer ||= timerChip(activeTab)),
     el("div.pager", {},
       el("button.icon-btn", { "aria-label": book ? "Previous page" : "Previous page", onclick: () => tab.prev(), disabled: !book && page <= 1 }, icon("left")),
@@ -485,6 +489,102 @@ function renderBottom() {
           el("button.icon-btn", { "aria-label": "Zoom out (−)", onclick: () => tab.zoom(-1) }, icon("zoomOut")),
           el("button.zoom-val", { "aria-label": "Zoom options", onclick: (e) => zoomMenu(e.currentTarget, tab) }, `${Math.round(scale * 100)}%`),
           el("button.icon-btn", { "aria-label": "Zoom in (+)", onclick: () => tab.zoom(1) }, icon("zoomIn"))));
+}
+
+/** The book's desk shows under the whole reading screen (Book view and page-at-a-time Page view). */
+function syncStage() {
+  const tab = activeTab();
+  const pane = tab?.el;
+  const pages = Boolean(tab && tab.state === "ready" && (tab.mode === "book" || tab.paged));
+  const desk = pages && pane?.dataset.desk && pane.dataset.desk !== "none" ? pane.dataset.desk : "none";
+  R.root.dataset.desk = desk;
+  for (const k of ["--desk", "--desk-size", "--desk-color"]) {
+    if (desk !== "none") R.root.style.setProperty(k, pane.style.getPropertyValue(k));
+    else R.root.style.removeProperty(k);
+  }
+  R.root.classList.toggle("reading-pages", pages);
+}
+
+/** Where each chapter starts (for the marks on the progress bar), cached per book. */
+async function chapterMarks(tab) {
+  if (tab.marks) return tab.marks;
+  const s = await bookStructure(tab, { scan: false }).catch(() => null);
+  if (!s) return []; // not known yet: worked out when the chapters are first shown
+  tab.marks = s.source === "pages" ? [] : s.flat.filter((e) => e.depth === 0).map((e) => ({ page: e.page, title: e.title })).sort((a, b) => a.page - b.page);
+  return tab.marks;
+}
+
+/** A progress bar you can scrub: hover for the page and chapter, click or drag to go there. */
+function scrubber(tab, page, total) {
+  const fill = el("div.scrub-fill");
+  const ticks = el("div.scrub-ticks", { "aria-hidden": "true" });
+  const knob = el("div.scrub-knob");
+  const tip = el("div.scrub-tip", { hidden: true });
+  const bar = el("div.scrub", {
+    role: "slider", tabindex: "-1", "aria-label": "Where you are in the book", "aria-valuemin": 1, "aria-valuemax": total, "aria-valuenow": page,
+    style: { "--p": total ? (page - (total > 1 ? 1 : 0)) / Math.max(1, total - 1) : 0 },
+  }, el("div.scrub-track", {}, fill, ticks, knob), tip);
+  let marks = tab.marks || [];
+  const at = (x) => {
+    const r = bar.getBoundingClientRect();
+    const k = clamp((x - r.left) / r.width, 0, 1);
+    return { k, p: Math.round(1 + k * Math.max(0, total - 1)) };
+  };
+  const chapterAt = (p) => [...marks].reverse().find((m) => m.page <= p)?.title || "";
+  const show = (x) => {
+    const { k, p } = at(x);
+    const ch = chapterAt(p);
+    tip.hidden = false;
+    tip.textContent = ch ? `p. ${p} · ${ch}` : `p. ${p} of ${total}`;
+    tip.style.left = `${k * 100}%`;
+    return p;
+  };
+  const drawTicks = () => setKids(ticks, ...marks.filter((m) => m.page > 1).map((m) => el("span", { style: { left: `${((m.page - 1) / Math.max(1, total - 1)) * 100}%` }, title: m.title })));
+  drawTicks();
+  if (!tab.marks) chapterMarks(tab).then((m) => { marks = m; if (bar.isConnected) drawTicks(); });
+  let dragging = false;
+  bar.addEventListener("pointermove", (e) => {
+    const p = show(e.clientX);
+    if (dragging) { bar.style.setProperty("--p", (p - 1) / Math.max(1, total - 1)); }
+  });
+  bar.addEventListener("pointerleave", () => { if (!dragging) tip.hidden = true; });
+  bar.addEventListener("pointerdown", (e) => { if (e.button !== 0) return; dragging = true; bar.setPointerCapture(e.pointerId); bar.classList.add("dragging"); show(e.clientX); });
+  bar.addEventListener("pointerup", (e) => {
+    if (!dragging) return;
+    dragging = false;
+    bar.classList.remove("dragging");
+    tip.hidden = true;
+    const { p } = at(e.clientX);
+    if (p !== page) tab.goTo(p);
+  });
+  bar.addEventListener("pointercancel", () => { dragging = false; bar.classList.remove("dragging"); tip.hidden = true; });
+  return bar;
+}
+
+/** While you read, the controls fade away; move towards them (or press a key) and they come back. */
+function wireCalm() {
+  const root = document.documentElement;
+  const fine = matchMedia("(hover: hover) and (pointer: fine)");
+  let timer = 0;
+  const calmNow = () => {
+    const tab = activeTab();
+    if (!fine.matches || !R.root.classList.contains("active") || !R.root.classList.contains("reading-pages")) return;
+    if (!tab || R.panel || R.focus || player.active || R.auto?.on) return;
+    if (document.querySelector(".popover, .menu, .defcard, .selbar, dialog[open]") || document.querySelector(".reader-top:hover, .reader-bottom:hover, .rail:hover")) { soon(); return; }
+    root.classList.add("reader-calm");
+  };
+  const soon = () => { clearTimeout(timer); timer = setTimeout(calmNow, 2600); };
+  const wake = () => { root.classList.remove("reader-calm"); soon(); };
+  document.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse") return;
+    const near = e.clientY < 110 || e.clientY > innerHeight - 100 || e.clientX < 110;
+    if (near || !root.classList.contains("reader-calm")) wake();
+  }, { passive: true });
+  document.addEventListener("keydown", (e) => { if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " ", "PageUp", "PageDown"].includes(e.key)) wake(); });
+  document.addEventListener("pointerdown", (e) => { if (e.target.closest?.(".reader-top, .reader-bottom, .rail, .side-panel")) wake(); });
+  for (const ev of ["tab-mode", "tab-state", "settings"]) bus.on(ev, () => soon());
+  window.addEventListener("hashchange", () => root.classList.remove("reader-calm"));
+  soon();
 }
 
 function zoomMenu(anchor, tab) {
@@ -511,30 +611,22 @@ function renderPanel() {
   const tab = activeTab();
   panel.hidden = !R.panel;
   R.root.classList.toggle("panel-open", Boolean(R.panel));
-  if (!R.panel || !tab) return;
+  if (!R.panel || !tab) { R.navOff?.(); R.navOff = null; return; }
   const head = el("header.panel-head", {},
     R.panel === "search"
       ? el("strong", {}, "Search")
-      : el("div.seg", { role: "tablist" }, [["contents", "Contents"], ["bookmarks", "Marks"], ["notes", "Notes"], ["words", "Words"]].map(([k, l]) =>
+      : el("div.seg", { role: "tablist" }, [["contents", "Chapters"], ["bookmarks", "Marks"], ["notes", "Notes"], ["words", "Words"]].map(([k, l]) =>
           el("button" + (R.panel === k ? ".on" : ""), { role: "tab", "aria-selected": String(R.panel === k), onclick: () => { R.panel = k; renderPanel(); } }, l))),
     el("button.icon-btn", { "aria-label": "Close panel", onclick: () => togglePanel(R.panel) }, icon("x", 18)));
-  const body = el("div.panel-body");
+  const body = el("div.panel-body" + (R.panel === "contents" ? ".nav-body" : ""));
+  R.navOff?.(); R.navOff = null;
   setKids(panel, head, body);
   ({ contents: renderContents, bookmarks: renderBookmarks, notes: renderNotes, search: renderSearch, words: (b, t) => renderWordsHere(b, t, { book: t.mode === "book" ? t.book : null }) })[R.panel](body, tab);
 }
 
-async function renderContents(body, tab) {
-  if (tab.state !== "ready") { body.append(el("p.muted.pad", {}, "Open the book to see its contents.")); return; }
-  const outline = await tab.outline();
-  if (!outline.length) {
-    body.append(el("p.muted.pad", {}, tab.kind === "pdf" ? "This PDF has no built-in table of contents. Use bookmarks to mark chapters yourself." : "No chapters were found in this book."));
-    return;
-  }
-  const build = (items, depth = 0) => el("ul.toc" + (depth ? ".sub" : ""), {}, items.map((it) =>
-    el("li", {},
-      el("button.toc-item", { onclick: () => { tab.goToDest(it.dest); if (isNarrow()) togglePanel(R.panel); } }, it.title || "Untitled"),
-      it.items?.length && depth < 4 ? build(it.items, depth + 1) : null)));
-  body.append(build(outline));
+function renderContents(body, tab) {
+  if (tab.state !== "ready") { body.append(el("p.muted.pad", {}, "Open the book to see its chapters.")); return; }
+  R.navOff = renderNavigator(body, tab, { onPicked: () => { if (isNarrow()) togglePanel(R.panel); } });
 }
 
 function renderBookmarks(body, tab) {
@@ -723,10 +815,11 @@ function appearancePopover(anchor) {
     el("div.pop-title", {}, el("strong", {}, "Reading appearance"),
       el("button.icon-btn.sm", { "aria-label": "Close", onclick: () => pop.remove() }, icon("x", 16))),
     tab ? el("button.feel-link", { onclick: () => { pop.remove(); feelPopover(anchor, tab); } },
-      icon("sparkle", 17), el("span", {}, el("strong", {}, "Book feel"), el("span.muted.small", {}, ` · ${EDITIONS[feelFor(tab.doc).edition]?.name} — page turns, sounds, paper and light`)), icon("right", 16)) : null,
+      icon("sparkle", 17), el("span", {}, el("strong", {}, `Book feel · ${EDITIONS[feelFor(tab.doc).edition]?.name}`), el("span.muted.small", { style: { display: "block" } }, "Page design, page turns, sounds, paper and desk")), icon("right", 16)) : null,
     typographyControls({
       preview: tab?.mode !== "book",
       compact: true,
+      tab,
       onSwitchToBook: tab?.mode === "book" || tab?.state !== "ready" ? null : () => { pop.remove(); openBookView(); },
     }));
   document.body.append(pop);
@@ -1001,6 +1094,15 @@ export function exportDocNotes(docId) {
 
 function wireGestures() {
   const stage = $(".stage", R.root);
+  // a pinch over the bars resizes the book's text too, instead of zooming the whole app
+  R.root.addEventListener("wheel", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.defaultPrevented) return;
+    const tab = activeTab();
+    if (tab?.mode === "book" && tab.book && !stage.contains(e.target)) {
+      e.preventDefault();
+      tab.book.pinch(Math.max(0.9, Math.min(1.1, Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.006)))), innerWidth / 2, innerHeight / 2);
+    }
+  }, { passive: false });
   // Ctrl/⌘ + wheel or trackpad pinch
   stage.addEventListener("wheel", (e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
@@ -1010,6 +1112,17 @@ function wireGestures() {
     const factor = Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0025));
     tab.scaleBy(factor, [e.clientX, e.clientY]);
   }, { passive: false });
+
+  // Safari's trackpad pinch (it sends gesture events instead of Ctrl + wheel)
+  let gScale = 1;
+  stage.addEventListener("gesturestart", (e) => { const tab = activeTab(); if (tab?.viewer && tab.mode === "pdf") { e.preventDefault(); gScale = 1; } });
+  stage.addEventListener("gesturechange", (e) => {
+    const tab = activeTab();
+    if (!tab?.viewer || tab.mode !== "pdf") return;
+    e.preventDefault();
+    tab.scaleBy(e.scale / gScale, [e.clientX, e.clientY]);
+    gScale = e.scale;
+  });
 
   // Two-finger pinch on touch screens: preview with a CSS transform, then re-render.
   let pinch = null;
@@ -1075,6 +1188,8 @@ function wireKeys() {
     else if (k === "+" || k === "=") tab.zoom(1);
     else if (k === "-") tab.zoom(-1);
     else if (k === "b" || k === "B") bookmarkCurrent();
+    else if (k === "c" || k === "C") togglePanel("contents");
+    else if (k === "]" || k === "[") stepChapter(tab, k === "]" ? 1 : -1);
     else if (k === "f" || k === "F") setFocus(!R.focus);
     else if (k === "R" && !book && e.shiftKey) tab.rotate();
     else if ((k === "r" || k === "R") && book && !e.shiftKey) toggleRuler();
@@ -1085,6 +1200,13 @@ function wireKeys() {
       if (sel && !sel.isCollapsed && sel.toString().trim()) { e.preventDefault(); const r = sel.getRangeAt(0); hideSelBar(); showTranslation(sel.toString(), r.getBoundingClientRect(), tab ? { docId: tab.docId, page: tab.currentPage() } : null); }
     }
   });
+}
+
+/** ] and [: the next or previous chapter. */
+async function stepChapter(tab, dir) {
+  const s = await bookStructure(tab);
+  const e = s && neighbour(tab, s, dir);
+  if (e) { await goToEntry(tab, e); toast(e.title, { duration: 1600 }); }
 }
 
 /** K, or the menu: look up what's selected (or open an empty search). */

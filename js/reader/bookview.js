@@ -10,11 +10,12 @@ import { renderPageToCanvas } from "./pdf.js";
 import { wordCount } from "./bookmodel.js";
 import { TextIndex, setHighlight, highlightsSupported } from "./textindex.js";
 import { annotationsFor, COLORS } from "./annotate.js";
-import { REFLOW_FONTS } from "../core/feel.js";
+import { typeFor, splitHeading, numberWords, roman } from "../core/typeset.js";
 import { icon } from "../ui/icons.js";
 import { wordAtPoint } from "./lookup.js";
 import { feelFor, playTurn } from "../core/bookfeel.js";
 import { beginTurn } from "./pageturn.js";
+import { PageCurl, CurlHand } from "./pagecurl.js";
 import { etaText } from "./ocr.js";
 import { translatedModel, bookLanguage, pairFor, savedTranslation } from "./booktranslate.js";
 
@@ -38,7 +39,8 @@ export class BookView {
     this.chunk = -1; // paged: the chunk on screen · scroll: chunk at the top of the screen
     this.loaded = []; // scroll mode: chunk indices currently in the page, in order
     this.spread = 0;
-    this.cols = 1;
+    this.cols = 1; // text columns on screen
+    this.pages = 1; // pages on screen (2 in a spread)
     this.totalCols = 1;
     this.geom = null;
     this.scroll = false;
@@ -76,8 +78,80 @@ export class BookView {
       if (coll === "words") this.refreshVocab();
     });
     document.fonts?.addEventListener?.("loadingdone", () => this.relayout());
+    this.hand = new CurlHand(this.#curlAdapter());
+    this.zoomPill = el("div.bk-zoom-pill", { "aria-live": "polite", hidden: true });
+    this.el.append(this.zoomPill);
     this.#wireInput();
     this.#wireScroll();
+  }
+
+  // ───────── taking a page by hand (see pagecurl.js) ─────────
+  #curlAdapter() {
+    return {
+      host: () => this.el,
+      pageRect: () => this.sheet.getBoundingClientRect(),
+      spread: () => this.pages === 2,
+      enabled: () => Boolean(this.geom) && !this.scroll && this.visible && feelFor(this.tab.doc).turn === "curl" && !this.turnPending,
+      canTurn: (dir) => this.#canTurn(dir),
+      snapshot: () => this.sheet.cloneNode(true),
+      begin: (dir) => this.#beginHandTurn(dir),
+      fresh: () => this.sheet.cloneNode(true),
+      revert: () => this.#revertHandTurn(),
+      sound: (dir) => { const f = feelFor(this.tab.doc); playTurn(f.sound, { dir, volume: f.volume }); },
+      committed: (dir) => { this.handBack = null; this.#counted(dir); },
+      stiffness: () => feelFor(this.tab.doc).stiffness || 1,
+      copy: (n) => n.cloneNode(true),
+      hotWidth: () => clamp(Math.round((this.geom?.margin ?? 48) * 1.1), 40, 76),
+      hasSelection: () => hasSelection(),
+      turn: (dir, corner) => (dir > 0 ? this.next({ corner }) : this.prev({ corner })),
+    };
+  }
+
+  #canTurn(dir) {
+    if (!this.geom || this.scroll) return false;
+    return dir > 0 ? this.spread < this.totalSpreads - 1 || this.chunk < this.lastChunk : this.spread > 0 || this.chunk > 0;
+  }
+
+  /** What moves the book one page (or spread) that way, or null at the end. */
+  #stepApply(dir) {
+    if (dir > 0) {
+      if (this.spread < this.totalSpreads - 1) return () => this.#show(this.spread + 1, { animate: true });
+      if (this.chunk < this.lastChunk) return () => this.#swapChunk(this.chunk + 1, "next");
+    } else {
+      if (this.spread > 0) return () => this.#show(this.spread - 1, { animate: true });
+      if (this.chunk > 0) return () => this.#swapChunk(this.chunk - 1, "prev");
+    }
+    return null;
+  }
+
+  async #beginHandTurn(dir) {
+    bus.emit("user-nav", this.tab);
+    this.handBack = { chunk: this.chunk, spread: this.spread };
+    if (dir > 0) this.moved = true;
+    const apply = this.#stepApply(dir);
+    this.turnPending = true;
+    try { await apply?.(); } finally { this.turnPending = false; }
+  }
+
+  /** The page was let go before it turned: put the old one back (still hidden under the curl). */
+  async #revertHandTurn() {
+    const b = this.handBack;
+    this.handBack = null;
+    if (!b) return;
+    if (this.chunk !== b.chunk) await this.loadChunk(b.chunk);
+    this.#show(b.spread, { animate: false });
+  }
+
+  /** Reading speed, from how long each page took (forward turns by hand). */
+  #counted(dir, auto = false) {
+    const now = Date.now();
+    const dt = now - this.lastTurn;
+    if (dir > 0 && !auto && dt > 4000 && dt < 600000) {
+      const sample = clamp(this.visibleWords() / (dt / 60000), 80, 700);
+      this.wpm = Math.round(this.wpm * 0.8 + sample * 0.2);
+      localStorage.setItem(WPM_KEY, String(this.wpm));
+    }
+    this.lastTurn = now;
   }
 
   get visible() { return !this.el.hidden && this.el.clientWidth > 0; }
@@ -116,29 +190,40 @@ export class BookView {
   // ───────── geometry ─────────
   #measure() {
     const s = store.settings();
+    const ty = typeFor(feelFor(this.tab.doc), s);
     const W = this.el.clientWidth, H = this.el.clientHeight;
     const phone = W < 720;
-    const fs = s.reflowSize;
+    const fs = Math.round((this.sizeOverride ?? s.reflowSize) * ty.k * 10) / 10;
+    const leading = Math.round(s.reflowLeading * ty.leadK * 100) / 100;
     const scroll = s.bookLayout === "scroll";
     const spread = !scroll && !phone && W >= 1000 && s.bookSpread !== "single";
-    const cols = spread ? 2 : 1;
+    const pages = spread ? 2 : 1;
     const outer = phone ? 0 : 64;
-    const margin = phone ? 22 : clamp(Math.round(W * 0.035), 36, 64);
-    const avail = (W - outer * 2) / cols - margin * 2;
-    const colW = Math.floor(Math.min((MEASURE[s.reflowWidth] || 32) * fs, avail));
-    const gap = margin * 2;
+    const margin = Math.round((phone ? 22 : clamp(Math.round(W * 0.035), 36, 64)) * (phone ? Math.min(1.1, Math.max(0.8, ty.marginK)) : ty.marginK));
+    const pageAvail = (W - outer * 2) / pages - margin * 2; // text width one page can hold
+    const measureW = (MEASURE[s.reflowWidth] || 32) * fs;
+    let perPage = 1, colW = Math.floor(Math.min(measureW, pageAvail)), gap = margin * 2;
+    if (!scroll && ty.perPage === 2) {
+      // two columns on each page, as long as each still holds a comfortable line
+      const inner = Math.round(fs * (pages === 2 ? 2.1 : 1.6));
+      const two = Math.floor((Math.min(pageAvail, measureW * 1.55) - inner) / 2);
+      if (two >= fs * (ty.colsChosen ? 9.5 : 12.5)) { perPage = 2; colW = two; gap = inner; }
+    }
+    const cols = pages * perPage;
     const headH = phone ? 34 : 46, footH = phone ? 34 : 46;
     const vpad = phone ? 6 : 22;
     const listening = Boolean(this.el.closest(".listening"));
     const below = listening ? (phone ? 128 : 78) : 0;
     const flowH = Math.max(160, Math.floor(H - vpad * 2 - headH - footH - below));
-    return { W, H, cols, colW, gap, margin, flowH, flowW: cols * colW + (cols - 1) * gap, step: colW + gap, phone, headH, footH, vpad, below, scroll, lineH: fs * s.reflowLeading };
+    return { W, H, cols, pages, perPage, colW, gap, margin, flowH, flowW: cols * colW + (cols - 1) * gap, step: colW + gap, phone, headH, footH, vpad, below, scroll, fs, leading, lineH: fs * leading, ty };
   }
 
   #applyGeometry() {
     const s = store.settings();
     const g = (this.geom = this.#measure());
+    const ty = g.ty;
     this.cols = g.cols;
+    this.pages = g.pages;
     const st = this.el.style;
     const set = (k, v) => st.setProperty(k, v);
     set("--bk-col", g.colW + "px");
@@ -150,15 +235,27 @@ export class BookView {
     set("--bk-foot", g.footH + "px");
     set("--bk-vpad", g.vpad + "px");
     set("--bk-below", g.below + "px");
-    set("--bk-font", REFLOW_FONTS[s.reflowFont]?.stack || REFLOW_FONTS.literata.stack);
-    set("--bk-size", s.reflowSize + "px");
-    set("--bk-leading", s.reflowLeading);
+    set("--bk-font", ty.stack);
+    set("--bk-head-font", ty.headStack);
+    set("--bk-size", g.fs + "px");
+    set("--bk-leading", g.leading);
     set("--bk-line", g.lineH + "px");
-    this.el.classList.toggle("spread", g.cols === 2);
+    set("--bk-weight", { medium: 500, bold: 600 }[s.textWeight] || 400);
+    set("--bk-tracking", { tight: "-0.012em", loose: "0.03em" }[s.letterSpacing] || "0em");
+    set("--bk-words", { tight: "-0.04em", loose: "0.12em" }[s.wordSpacing] || "0em");
+    set("--bk-ornament", JSON.stringify(ty.ornament));
+    const d = this.el.dataset;
+    d.design = ty.design;
+    d.folio = ty.folio;
+    this.el.classList.toggle("spread", g.pages === 2);
+    this.el.classList.toggle("cols2", g.perPage === 2);
     this.el.classList.toggle("phone", g.phone);
     this.el.classList.toggle("scroll", g.scroll);
     this.el.classList.toggle("justify", s.justify !== false);
     this.el.classList.toggle("spaced", s.paraStyle === "spaced");
+    this.el.classList.toggle("no-hyphens", s.hyphens === false);
+    this.el.classList.toggle("no-heads", !ty.heads);
+    this.el.classList.toggle("no-drop", !ty.drop);
     this.ruler.hidden = !s.ruler;
     this.flow.style.columnCount = g.scroll ? "" : g.cols;
     this.#sizeFigures();
@@ -216,7 +313,7 @@ export class BookView {
     await this.goToPage(page || 1, { animate: false });
     if (this.geom.phone && !localStorage.getItem("luma.bookHint")) {
       localStorage.setItem("luma.bookHint", "1");
-      bus.emit("toast", this.scroll ? "Scroll to read · tap a word to define it" : "Swipe or tap the margins to turn pages · tap a word to define it");
+      bus.emit("toast", this.scroll ? "Scroll to read · pinch to change the text size · tap a word to define it" : "Swipe to turn the page · pinch to change the text size · tap a word to define it");
     }
     this.refreshHighlights();
     this.refreshVocab();
@@ -340,7 +437,7 @@ export class BookView {
           node = el("blockquote.bk-b.bk-quote", { dataset: { bid: blk.id, page: p }, lang: blk.translated ? trLang : null }, blk.text);
           afterHeading = false;
         } else if (blk.type === "h") {
-          node = el(`h${blk.level}.bk-b.bk-h`, { dataset: { bid: blk.id, page: p }, lang: blk.translated ? trLang : null }, blk.text);
+          node = el(`h${blk.level}.bk-b.bk-h`, { dataset: { bid: blk.id, page: p }, lang: blk.translated ? trLang : null }, ...headingParts(blk.text, blk.level));
           afterHeading = blk.level === 2 ? "chapter" : "section";
         } else {
           const trailing = frag.lastChild?.classList?.contains("bk-tr") && frag.lastChild.dataset.for === lastP?.dataset.bid; // "both": the translation sits after its paragraph
@@ -352,7 +449,7 @@ export class BookView {
             words += wordCount(blk.text);
             continue;
           }
-          node = el("p.bk-b" + (blk.cont ? ".cont" : "") + (afterHeading ? ".first" : "") + (afterHeading === "chapter" && blk.text.length >= 120 && /^[\p{L}\p{N}]/u.test(blk.text) && !both ? ".drop" : ""),
+          node = el("p.bk-b" + (blk.cont ? ".cont" : "") + (afterHeading ? ".first" : "") + (afterHeading === "chapter" ? ".chap" : "") + (afterHeading === "chapter" && blk.text.length >= 120 && /^[\p{L}\p{N}]/u.test(blk.text) && !both ? ".drop" : ""),
             { dataset: { bid: blk.id, page: p }, lang: blk.translated ? trLang : null }, blk.text);
           addNotes(node, blk);
           lastP = node;
@@ -387,7 +484,7 @@ export class BookView {
     this.#renderFigures();
     const [a] = this.loadedRange;
     this.chapterBefore = "";
-    this.viewModel.headingBefore(a - 1).then((t) => { this.chapterBefore = t; this.#updateRunning(); }).catch(() => {});
+    this.viewModel.headingBefore(a - 1).then((t) => { this.chapterBefore = splitHeading(t)?.title || t; this.#updateRunning(); }).catch(() => {});
     this.refreshHighlights();
     this.refreshVocab();
     this.refreshHard();
@@ -496,41 +593,38 @@ export class BookView {
     return this.visibleBlocks().reduce((n, b) => n + wordCount(b.textContent), 0);
   }
 
-  async next({ auto = false } = {}) {
+  async next({ auto = false, corner } = {}) {
     if (!this.geom) return;
     this.moved = true;
     if (!auto) bus.emit("user-nav", this.tab);
-    const now = Date.now();
-    const dt = now - this.lastTurn;
-    if (!auto && dt > 4000 && dt < 600000) {
-      const sample = clamp(this.visibleWords() / (dt / 60000), 80, 700);
-      this.wpm = Math.round(this.wpm * 0.8 + sample * 0.2);
-      localStorage.setItem(WPM_KEY, String(this.wpm));
-    }
-    this.lastTurn = now;
+    if (this.hand?.busy || this.turnPending) return; // a page is already in your hand
+    this.#counted(1, auto);
     if (this.scroll) {
       this.clip.scrollBy({ top: this.clip.clientHeight - this.geom.lineH * 2, behavior: reduced() ? "auto" : "smooth" });
       return;
     }
-    if (this.spread < this.totalSpreads - 1) return this.#turn(1, () => this.#show(this.spread + 1, { animate: true }), { auto });
-    if (this.chunk < this.lastChunk) return this.#turn(1, () => this.#swapChunk(this.chunk + 1, "next"), { auto });
+    const apply = this.#stepApply(1);
+    if (apply) return this.#turn(1, apply, { auto, corner });
   }
 
-  async prev() {
+  async prev({ corner } = {}) {
     if (!this.geom) return;
     bus.emit("user-nav", this.tab);
+    if (this.hand?.busy || this.turnPending) return;
     this.lastTurn = Date.now();
     if (this.scroll) {
       this.clip.scrollBy({ top: -(this.clip.clientHeight - this.geom.lineH * 2), behavior: reduced() ? "auto" : "smooth" });
       return;
     }
-    if (this.spread > 0) return this.#turn(-1, () => this.#show(this.spread - 1, { animate: true }));
-    if (this.chunk > 0) return this.#turn(-1, () => this.#swapChunk(this.chunk - 1, "prev"));
+    const apply = this.#stepApply(-1);
+    if (apply) return this.#turn(-1, apply, { corner });
   }
 
   /** A page turn in this book's feel: the sound, then the animation (slide is
-   *  the text gliding along; the others are drawn over the page). */
-  async #turn(dir, apply, { auto = false, silent = false } = {}) {
+   *  the text gliding along; curl is the page taken by its corner; the others
+   *  are drawn over the page). */
+  async #turn(dir, apply, { auto = false, silent = false, corner = "bottom" } = {}) {
+    if (this.hand?.busy || this.turnPending) return;
     const f = feelFor(this.tab.doc);
     if (!silent) playTurn(f.sound, { dir, volume: f.volume * (auto ? 0.45 : 1) });
     const style = f.turn;
@@ -538,10 +632,20 @@ export class BookView {
     const r = this.sheet.getBoundingClientRect();
     const host = this.el.getBoundingClientRect();
     const rect = { left: r.left - host.left, top: r.top - host.top, width: r.width, height: r.height };
+    if (style === "curl") {
+      this.hand?.unpeek(true);
+      const curl = new PageCurl(this.el, rect, { dir, spread: this.pages === 2, corner, oldNode: this.sheet.cloneNode(true), stiffness: f.stiffness || 1 });
+      this.turnPending = true;
+      try { await apply(); } finally { this.turnPending = false; }
+      curl.ready(this.sheet.cloneNode(true));
+      await curl.play(f.ms);
+      curl.finish();
+      return;
+    }
     const turn = beginTurn(this.el, rect, this.sheet.cloneNode(true));
     this.turning = turn;
     await apply();
-    await turn.run({ style, ms: f.ms, dir, spread: this.cols === 2, newNode: this.sheet.cloneNode(true), paper: getComputedStyle(this.sheet).backgroundColor });
+    await turn.run({ style, ms: f.ms, dir, spread: this.pages === 2, newNode: this.sheet.cloneNode(true), paper: getComputedStyle(this.sheet).backgroundColor });
     if (this.turning === turn) this.turning = null;
   }
 
@@ -553,8 +657,8 @@ export class BookView {
     if (!on) { this.sheet.style.removeProperty("--sheet-shadow"); this.el.classList.remove("edged"); return; }
     const N = 7;
     const prog = clamp((this.page - 1) / Math.max(1, this.model.numPages - 1), 0, 1);
-    const left = this.cols === 2 ? Math.round(prog * N) : 0;
-    const right = this.cols === 2 ? N - left : Math.max(1, Math.round((1 - prog) * N));
+    const left = this.pages === 2 ? Math.round(prog * N) : 0;
+    const right = this.pages === 2 ? N - left : Math.max(1, Math.round((1 - prog) * N));
     const line = "rgb(60 45 25 / .16)";
     const layers = [];
     for (let i = 1; i <= Math.max(left, right); i++) {
@@ -562,13 +666,13 @@ export class BookView {
       if (i <= left) layers.push(`${-i}px ${i * 0.45}px 0 ${c}`);
       if (i <= right) layers.push(`${i}px ${i * 0.45}px 0 ${c}`);
     }
+    // the cover (drawn behind the pages, see editions.css) reaches just past the thickest edge
     const cover = pane.dataset.cover;
     const n = Math.max(left, right);
-    if (cover === "device") layers.push("0 0 0 16px var(--cover)", "0 0 0 17px rgb(255 255 255 / .06)");
-    else if (cover === "leather") layers.push(`0 0 0 ${n + 6}px var(--cover)`, `0 0 0 ${n + 7}px #B8913A`, `0 0 0 ${n + 12}px var(--cover)`);
-    else if (cover === "cloth") layers.push(`0 0 0 ${n + 9}px var(--cover)`, `0 0 0 ${n + 10}px rgb(0 0 0 / .25)`);
-    else if (cover === "paper") layers.push(`0 0 0 ${n + 3}px var(--cover)`);
-    layers.push("0 26px 50px -16px rgb(0 0 0 / .5)");
+    const pad = { device: 18, leather: n + 14, cloth: n + 11, paper: Math.round(n * 0.5) + 2 }[cover] ?? 0;
+    this.sheet.style.setProperty("--cover-pad", pad + "px");
+    if (cover === "none") layers.push("0 26px 50px -16px rgb(0 0 0 / .5)");
+    else layers.push("0 1px 2px rgb(0 0 0 / .12)");
     this.sheet.style.setProperty("--sheet-shadow", layers.join(", "));
     this.el.classList.add("edged");
   }
@@ -607,6 +711,18 @@ export class BookView {
     const cr = this.clip.getBoundingClientRect();
     const top = this.clip.scrollTop + (rect.top - cr.top) - cr.height * at;
     this.clip.scrollTo({ top: Math.max(0, top), behavior: smooth && !reduced() ? "smooth" : "auto" });
+  }
+
+  /** Go straight to a block (a chapter heading): its page, or the top of the screen when scrolling. */
+  async goToBlock(bid) {
+    if (!bid || !this.geom) return false;
+    const node = await this.ensureBlock(bid).catch(() => null);
+    const rect = node && [...node.getClientRects()].find((r) => r.width > 0 || r.height > 0);
+    if (!rect) return false;
+    this.moved = true;
+    if (this.scroll) { this.#scrollToRect(rect, 0.04, false); this.#afterMove(); }
+    else this.#show(Math.floor(this.#colOfRect(rect) / this.cols), { animate: false });
+    return true;
   }
 
   async ensureBlock(bid) {
@@ -698,7 +814,7 @@ export class BookView {
     return { bid: first.dataset.bid, offset };
   }
 
-  async relayout() {
+  async relayout({ at = null } = {}) {
     if (!this.visible || this.chunk < 0) return;
     const wantScroll = store.settings().bookLayout === "scroll";
     const anchorPage = this.page;
@@ -710,22 +826,100 @@ export class BookView {
       await this.goToPage(anchorPage, { animate: false });
       return;
     }
+    this.el.__turn?.finish?.();
+    this.hand?.unpeek(true);
+    // keep the same words in front of you: the word under your fingers (pinch),
+    // else the first word on the page
+    const caret = at || this.#caretAnchor();
     const anchor = this.visibleBlocks()[0]?.dataset.bid;
     this.#applyGeometry();
     if (this.scroll) {
-      const target = anchor && this.flow.querySelector(`[data-bid="${anchor}"]`);
-      if (target) this.#scrollToRect(target.getBoundingClientRect(), 0.04, false);
+      if (!(caret && this.#restoreCaret(caret))) {
+        const target = anchor && this.flow.querySelector(`[data-bid="${anchor}"]`);
+        if (target) this.#scrollToRect(target.getBoundingClientRect(), 0.04, false);
+      }
     } else {
       this.flow.classList.remove("animate");
       this.flow.style.transform = "translate3d(0,0,0)";
       this.#countCols();
-      const target = anchor && this.flow.querySelector(`[data-bid="${anchor}"]`);
-      const rect = target?.getClientRects()[0];
-      this.#show(rect ? Math.floor(this.#colOfRect(rect) / this.cols) : 0, { animate: false });
+      if (!(caret && this.#restoreCaret(caret))) {
+        const target = anchor && this.flow.querySelector(`[data-bid="${anchor}"]`);
+        const rect = target?.getClientRects()[0];
+        this.#show(rect ? Math.floor(this.#colOfRect(rect) / this.cols) : 0, { animate: false });
+      }
     }
     this.refreshHighlights();
     this.refreshVocab();
     this.refreshHard();
+  }
+
+  /** A point in the text to hold on to while the pages are set again. */
+  #caretAnchor(x, y) {
+    if (!this.geom) return null;
+    const cr = this.clip.getBoundingClientRect();
+    const pts = [];
+    if (x != null && x > cr.left && x < cr.right && y > cr.top && y < cr.bottom) pts.push([x, y]);
+    if (!this.scroll && !pts.length) {
+      // paged: the first letter on the page (a chapter opening can leave the top of a page empty)
+      const c = this.#caretAtCol(this.spread * this.cols);
+      const rect = c && charRect(c.node, c.offset);
+      if (rect) return { node: c.node, offset: c.offset, dy: rect.top - cr.top };
+    }
+    for (const k of [0.5, 1.5, 2.5]) pts.push([cr.left + 4, cr.top + this.geom.lineH * k]);
+    for (const [px, py] of pts) {
+      const pt = caretAt(px, py);
+      if (pt?.node?.nodeType !== 3 || !this.flow.contains(pt.node)) continue;
+      const rect = charRect(pt.node, pt.offset);
+      if (!rect) continue;
+      return { node: pt.node, offset: pt.offset, dy: rect.top - cr.top };
+    }
+    return null;
+  }
+
+  #restoreCaret(a) {
+    if (!a.node.isConnected) return false;
+    const rect = charRect(a.node, a.offset);
+    if (!rect) return false;
+    if (this.scroll) {
+      this.clip.scrollTop += rect.top - this.clip.getBoundingClientRect().top - a.dy;
+      this.#afterMove();
+    } else this.#show(Math.floor(this.#colOfRect(rect) / this.cols), { animate: false });
+    return true;
+  }
+
+  /** Pinch from anywhere on the reading screen (the bars too). */
+  pinch(f, x, y) { this.#zoomBy(f, x, y); }
+
+  /** Pinch: make the text bigger or smaller, live, keeping your place. */
+  #zoomBy(f, x, y) {
+    if (!this.geom || !isFinite(f) || f <= 0) return;
+    const s = store.settings();
+    const z = (this.zoomState ||= { size: this.sizeOverride ?? s.reflowSize, at: null });
+    z.at ||= this.#caretAnchor(x, y);
+    z.size = clamp(z.size * f, 12, 40);
+    const px = Math.round(z.size);
+    if (px !== (this.sizeOverride ?? s.reflowSize)) {
+      this.sizeOverride = px;
+      if (!z.raf) z.raf = requestAnimationFrame(() => { z.raf = 0; this.relayout({ at: z.at }); });
+      this.zoomPill.hidden = false;
+      this.zoomPill.textContent = `Text ${px} px`;
+      this.zoomPill.classList.add("on");
+    }
+    clearTimeout(z.timer);
+    z.timer = setTimeout(() => this.#endZoom(), 520);
+  }
+
+  async #endZoom() {
+    const z = this.zoomState;
+    this.zoomState = null;
+    this.zoomPill.classList.remove("on");
+    clearTimeout(this.pillTimer);
+    this.pillTimer = setTimeout(() => { if (!this.zoomPill.classList.contains("on")) this.zoomPill.hidden = true; }, 400);
+    const px = this.sizeOverride;
+    if (px == null) return;
+    if (z?.raf) { cancelAnimationFrame(z.raf); await this.relayout({ at: z.at }); }
+    if (px !== store.settings().reflowSize) await store.setSettings({ reflowSize: px }); // keeps it for every book, on every device
+    this.sizeOverride = null;
   }
 
   #updateRunning() {
@@ -738,9 +932,9 @@ export class BookView {
     const firstVis = vis[0];
     for (const n of all) {
       if (n === firstVis) break;
-      if (n.matches("h2, h3")) chapter = n.textContent;
+      if (n.matches("h2, h3")) chapter = headingText(n);
     }
-    if (firstVis?.matches("h2, h3")) chapter = firstVis.textContent;
+    if (firstVis?.matches("h2, h3")) chapter = headingText(firstVis);
     const page = this.page;
     const total = this.model.numPages;
     const pct = Math.round((page / total) * 100);
@@ -756,18 +950,100 @@ export class BookView {
     }
     const bookMin = this.model.wordsLeft(page) / this.wpm;
     const left = chapterMin != null ? `${fmtDuration(chapterMin)} left in chapter` : `${fmtDuration(bookMin)} left in book`;
-    if (g.cols === 2) {
-      this.headL.textContent = doc?.title || "";
-      this.headR.textContent = chapter || "";
-      this.footL.textContent = `p. ${page} of ${total}`;
-      this.footR.textContent = `${pct}% · ${left}`;
-    } else {
-      this.headL.textContent = chapter || doc?.title || "";
-      this.headR.textContent = "";
-      this.footL.textContent = `p. ${page} of ${total} · ${pct}%`;
-      this.footR.textContent = left;
-    }
     this.timeLeft = left;
+    if (this.scroll) {
+      setKids(this.headL, el("span.run-c", {}, chapter || doc?.title || ""));
+      setKids(this.headR);
+      setKids(this.footL, el("span.run-s.a", {}, `p. ${page} of ${total} · ${pct}%`), el("span.run-s.b", {}, left));
+      setKids(this.footR);
+      return;
+    }
+    // the page number of each page on screen (the right page starts where its first line is)
+    const mid = this.sheet.getBoundingClientRect().left + this.sheet.getBoundingClientRect().width / 2;
+    let rightPage = page;
+    if (g.pages === 2) {
+      const first = vis.find((n) => [...n.getClientRects()].some((r) => r.width > 0 && r.left >= mid));
+      rightPage = Number(first?.dataset.page) || page;
+    }
+    const ty = g.ty;
+    // the recto's chapter: the last heading before its first line
+    let chapterR = chapter;
+    if (g.pages === 2 && vis.length) {
+      for (const n of vis) {
+        if ([...n.getClientRects()].some((r) => r.width > 0 && r.left >= mid)) break;
+        if (n.matches("h2, h3")) chapterR = headingText(n);
+      }
+      const firstR = vis.find((n) => [...n.getClientRects()].some((r) => r.width > 0 && r.left >= mid));
+      if (firstR?.matches("h2, h3")) chapterR = headingText(firstR);
+    }
+    const base = this.spread * g.cols;
+    const catchL = g.pages === 2 ? this.#firstWordOfCol(base + g.perPage) : "";
+    const catchR = this.#firstWordOfCol(base + g.cols);
+    const title = doc?.title || "";
+    const item = (k, side) => {
+      const v = { t: title, c: (side === "r" && g.pages === 2 ? chapterR : chapter) || title, f: String(side === "r" ? rightPage : page), w: side === "r" ? catchR : catchL }[k];
+      return v ? el("span.run-" + k, {}, v) : null;
+    };
+    const run = RUN[ty.design] || RUN.modern;
+    const heads = ty.heads ? (g.pages === 2 ? [run.hl, run.hr] : [run.h1, []]) : [[], []];
+    let foots;
+    if (ty.folio === "stats") foots = null;
+    else if (ty.folio === "off") foots = [[], []];
+    else foots = g.pages === 2 ? [run.fl, run.fr] : [run.f1, []];
+    const folioInHead = (ks) => ks.filter((k) => k !== "f" || ty.folio === "book");
+    setKids(this.headL, ...folioInHead(heads[0]).map((k) => item(k, g.pages === 2 ? "l" : "r")));
+    setKids(this.headR, ...folioInHead(heads[1]).map((k) => item(k, "r")));
+    if (foots) {
+      setKids(this.footL, ...foots[0].map((k) => item(k, g.pages === 2 ? "l" : "r")));
+      setKids(this.footR, ...foots[1].map((k) => item(k, "r")));
+    } else if (g.pages === 2) {
+      setKids(this.footL, el("span.run-s", {}, `p. ${page} of ${total}`));
+      setKids(this.footR, el("span.run-s", {}, `${pct}% · ${left}`));
+    } else {
+      setKids(this.footL, el("span.run-s.a", {}, `p. ${page} of ${total} · ${pct}%`), el("span.run-s.b", {}, left));
+      setKids(this.footR);
+    }
+    this.sheet.style.setProperty("--bk-progress", (page / total).toFixed(4));
+  }
+
+  /** The first word of a column (for catchwords), or "". */
+  #firstWordOfCol(ci) {
+    const c = this.#caretAtCol(ci);
+    if (!c) return "";
+    const rest = c.node.data.slice(c.offset).trimStart();
+    const w = (/^[^\s]+/.exec(rest) || [""])[0].replace(/[,.;:!?)”’"]+$/, "");
+    return w.length > 18 ? w.slice(0, 18) : w;
+  }
+
+  /** The first character of text in a column: { node, offset }, or null. */
+  #caretAtCol(ci) {
+    const g = this.geom;
+    if (!g || ci >= this.totalCols) return null;
+    const fr = this.flow.getBoundingClientRect();
+    const x0 = fr.left + ci * g.step - 1;
+    const inCol = (r) => r.width > 0 && r.left >= x0 && r.left < x0 + g.colW + 2;
+    for (const b of this.flow.children) {
+      const rects = [...b.getClientRects()];
+      if (!rects.some(inCol)) { if (rects.some((r) => r.width > 0 && r.left > x0 + g.colW)) return null; continue; }
+      if (b.matches(".bk-fig, .bk-break")) return null;
+      const walker = document.createTreeWalker(b, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (!n.length) continue;
+        range.selectNodeContents(n);
+        if (![...range.getClientRects()].some(inCol)) continue;
+        let lo = 0, hi = n.length - 1;
+        while (lo < hi) {
+          const m = (lo + hi) >> 1;
+          range.setStart(n, m); range.setEnd(n, m + 1);
+          const r = [...range.getClientRects()].find((q) => q.width > 0);
+          if (r && r.left >= x0) hi = m; else lo = m + 1;
+        }
+        return { node: n, offset: lo };
+      }
+      return null;
+    }
+    return null;
   }
 
   // ───────── highlight layers ─────────
@@ -872,13 +1148,40 @@ export class BookView {
   // ───────── input ─────────
   #wireInput() {
     let down = null;
+    const touches = new Map(); // pointers on the screen (two fingers = pinch)
+    let pinch = null;
     this.el.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "touch") touches.set(e.pointerId, [e.clientX, e.clientY]);
+      if (touches.size === 2) {
+        // two fingers: pinch the text bigger or smaller
+        this.hand.cancel();
+        if (down?.drag) this.#show(this.spread);
+        down = null;
+        const [a, b] = [...touches.values()];
+        pinch = { d0: Math.hypot(a[0] - b[0], a[1] - b[1]), f: 1 };
+        return;
+      }
       if (e.button !== 0 || e.target.closest(".bk-turn, .fn")) return;
+      if (!this.scroll && this.hand.down(e)) { down = { hand: true }; return; }
       down = { x: e.clientX, y: e.clientY, t: performance.now(), type: e.pointerType, drag: false };
     });
     this.el.addEventListener("pointermove", (e) => {
-      if (e.pointerType === "mouse" && !this.listening) this.placeRuler(e.clientY, e.clientX);
-      if (!down || down.type === "mouse" || this.scroll) return;
+      if (touches.has(e.pointerId)) touches.set(e.pointerId, [e.clientX, e.clientY]);
+      if (pinch && touches.size === 2) {
+        const [a, b] = [...touches.values()];
+        const f = Math.hypot(a[0] - b[0], a[1] - b[1]) / (pinch.d0 || 1);
+        this.#zoomBy(f / pinch.f, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+        pinch.f = f;
+        return;
+      }
+      if (e.pointerType === "mouse" && !e.buttons) {
+        if (!this.listening) this.placeRuler(e.clientY, e.clientX);
+        if (!this.scroll) this.hand.hover(e.clientX, e.clientY);
+      }
+      if (!down) return;
+      if (down.hand || down.curl) { this.hand.move(e); return; }
+      if (down.type === "mouse" || this.scroll) return;
+      if (!down.drag && this.hand.move(e)) { down.curl = true; return; } // the page follows your finger
       const dx = e.clientX - down.x, dy = e.clientY - down.y;
       if (!down.drag && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.4 && !hasSelection()) {
         down.drag = true;
@@ -889,10 +1192,18 @@ export class BookView {
         this.flow.style.transform = `translate3d(${-x + dx * 0.9}px,0,0)`;
       }
     });
+    const lift = (e) => {
+      touches.delete(e.pointerId);
+      if (pinch) { if (touches.size < 2) pinch = null; return true; }
+      return false;
+    };
     const end = (e) => {
-      if (!down) return;
+      if (lift(e)) return;
       const d = down;
       down = null;
+      if (!d) { this.hand.up(e); return; }
+      if (d.hand || d.curl) { this.hand.up(e); e.stopPropagation(); return; }
+      this.hand.up(e);
       const dx = e.clientX - d.x, dy = e.clientY - d.y;
       if (d.drag) {
         e.stopPropagation();
@@ -913,22 +1224,35 @@ export class BookView {
       // the middle shows/hides the controls.
       const r = this.el.getBoundingClientRect();
       const fx = (e.clientX - r.left) / r.width;
-      if (fx < 0.09) { e.stopPropagation(); this.prev(); return; }
-      if (fx > 0.91) { e.stopPropagation(); this.next(); return; }
+      const corner = e.clientY > r.top + r.height * 0.55 ? "bottom" : "top";
+      if (fx < 0.09) { e.stopPropagation(); this.prev({ corner }); return; }
+      if (fx > 0.91) { e.stopPropagation(); this.next({ corner }); return; }
       if (wordAtPoint(e.clientX, e.clientY, this.el)) return;
-      if (fx < 0.22) { e.stopPropagation(); this.prev(); }
-      else if (fx > 0.78) { e.stopPropagation(); this.next(); }
+      if (fx < 0.22) { e.stopPropagation(); this.prev({ corner }); }
+      else if (fx > 0.78) { e.stopPropagation(); this.next({ corner }); }
       else bus.emit("book-tap-center", this.tab);
     };
     this.el.addEventListener("pointerup", end);
-    this.el.addEventListener("pointercancel", () => { if (down?.drag) this.#show(this.spread); down = null; });
+    this.el.addEventListener("pointercancel", (e) => {
+      lift(e);
+      if (down?.drag) this.#show(this.spread);
+      this.hand.cancel();
+      down = null;
+    });
+    this.el.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && !down) this.hand.leave(); });
 
     let acc = 0, lock = 0;
     this.el.addEventListener("wheel", (e) => {
-      if (e.ctrlKey || e.metaKey) return;
+      if (e.ctrlKey || e.metaKey) {
+        // a trackpad pinch (or Ctrl + wheel): the text grows or shrinks where you are
+        e.preventDefault();
+        this.#zoomBy(clamp(Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.006)), 0.9, 1.1), e.clientX, e.clientY);
+        return;
+      }
       if (this.scroll) { bus.emit("user-nav", this.tab); return; } // native scrolling
       e.preventDefault();
-      if (performance.now() < lock) return;
+      if (this.hand.wheel(e)) { bus.emit("user-nav", this.tab); return; } // a two-finger swipe takes the page with it
+      if (performance.now() < lock || this.hand.busy) return;
       acc += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
       if (Math.abs(acc) > 70) {
         if (acc > 0) this.next(); else this.prev();
@@ -936,6 +1260,15 @@ export class BookView {
         lock = performance.now() + 420;
       }
     }, { passive: false });
+    // Safari's trackpad pinch
+    let gScale = 1;
+    this.el.addEventListener("gesturestart", (e) => { e.preventDefault(); gScale = 1; });
+    this.el.addEventListener("gesturechange", (e) => {
+      e.preventDefault();
+      this.#zoomBy(e.scale / gScale, e.clientX, e.clientY);
+      gScale = e.scale;
+    });
+    this.el.addEventListener("gestureend", (e) => e.preventDefault());
     this.clip.addEventListener("touchmove", () => { if (this.scroll) bus.emit("user-nav", this.tab); }, { passive: true });
 
     // footnote pop-ups
@@ -955,6 +1288,30 @@ export class BookView {
     this.el.remove();
   }
 }
+
+// Where each design puts its running heads and page numbers (spread: left and
+// right page; single: one page). t title · c chapter · f page number · w catchword.
+const RUN = {
+  modern: { hl: ["t"], hr: ["c"], h1: ["c"], fl: ["f"], fr: ["f"], f1: ["f"] },
+  trade: { hl: ["f", "t"], hr: ["c", "f"], h1: ["c", "f"], fl: [], fr: [], f1: [] },
+  fine: { hl: ["t"], hr: ["c"], h1: ["c"], fl: ["f"], fr: ["f"], f1: ["f"] },
+  pocket: { hl: ["f", "t"], hr: ["c", "f"], h1: ["c", "f"], fl: [], fr: [], f1: [] },
+  antique: { hl: ["f", "t"], hr: ["c", "f"], h1: ["c", "f"], fl: ["w"], fr: ["w"], f1: ["w"] },
+  magazine: { hl: ["t"], hr: ["c"], h1: ["t"], fl: ["f", "t"], fr: ["c", "f"], f1: ["c", "f"] },
+  ereader: { hl: ["t"], hr: ["c"], h1: ["t"], fl: ["f"], fr: ["f"], f1: ["f"] },
+};
+
+/** A chapter heading as number + title, so each design can set them its own way. */
+function headingParts(text, level) {
+  const sp = level === 2 ? splitHeading(text) : null;
+  if (!sp) return [el("span.ch-title", {}, text)];
+  return [
+    el("span.ch-num", { dataset: { words: numberWords(sp.n), roman: roman(sp.n), n: String(sp.n), ...(sp.label ? { label: sp.label } : {}) } }, sp.lead),
+    el("span.ch-sep", {}, sp.sep),
+    el("span.ch-title", {}, sp.title),
+  ];
+}
+const headingText = (h) => h.querySelector(".ch-title")?.textContent || h.textContent;
 
 /** Insert footnote markers (no text of their own, so text offsets stay exact). */
 function addNotes(node, blk) {
@@ -987,6 +1344,15 @@ function showNote(fn) {
 function hasSelection() {
   const s = document.getSelection();
   return Boolean(s && !s.isCollapsed && s.toString().trim());
+}
+
+/** The box of one character of a text node (null when it isn't laid out). */
+function charRect(node, offset) {
+  const r = document.createRange();
+  const o = clamp(offset, 0, Math.max(0, node.length - 1));
+  r.setStart(node, o);
+  r.setEnd(node, Math.min(node.length, o + 1));
+  return [...r.getClientRects()].find((q) => q.height > 0) || null;
 }
 
 function caretAt(x, y) {

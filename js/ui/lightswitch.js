@@ -3,16 +3,26 @@
 // to the next; a long press (or right-click) shows them all, with the warmth.
 import { el, setKids, isNarrow, bus } from "../core/util.js";
 import { store } from "../data/store.js";
-import { MODES, currentMode } from "../core/feel.js";
+import { MODES, currentMode, THEMES } from "../core/feel.js";
 import { closeMenus, toast } from "./overlay.js";
 import { icon } from "./icons.js";
 
 /** Move to a mode, with the new light spreading out from where you tapped. */
 export async function setMode(id, from) {
   const m = MODES.find((x) => x.id === id) || MODES[0];
-  const apply = () => store.setSettings({ theme: m.theme, warm: m.warm });
+  await spread(() => store.setSettings({ theme: m.theme, warm: m.warm }), from);
+  return m;
+}
+
+/** A reading theme (Sage, Midnight…), with the same spreading light. */
+export function setTheme(id, from) {
+  return spread(() => store.setSettings({ theme: id, warm: "off" }), from);
+}
+
+/** The new light spreads out in a circle from `from`. */
+async function spread(apply, from) {
   const root = document.documentElement;
-  if (!document.startViewTransition || root.dataset.motion === "reduce" || !from) { await apply(); return m; }
+  if (!document.startViewTransition || root.dataset.motion === "reduce" || !from) { await apply(); return; }
   const r = from.getBoundingClientRect();
   const x = r.left + r.width / 2, y = r.top + r.height / 2;
   const end = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
@@ -24,7 +34,6 @@ export async function setMode(id, from) {
   }).catch(() => {});
   vt.finished.finally(() => root.classList.remove("switching"));
   await vt.updateCallbackDone.catch(() => {});
-  return m;
 }
 
 export async function cycleMode(from) {
@@ -46,20 +55,26 @@ export function lightPopover(anchor) {
       el("div.pop-title", {}, el("strong", {}, "Reading light"), el("button.icon-btn.sm", { "aria-label": "Close", onclick: () => close() }, icon("x", 16))),
       el("div.light-modes", { role: "radiogroup" }, MODES.map((m) => el("button.light-mode" + (cur === m.id ? ".on" : ""), {
         role: "radio", "aria-checked": String(cur === m.id), title: m.note,
-        onclick: (e) => setMode(m.id, e.currentTarget),
+        onclick: () => setMode(m.id, anchor.isConnected ? anchor : null),
       }, el("span.light-swatch", { dataset: { mode: m.id } }, el("span.brand-mark.sm", { dataset: { mode: m.id } })), el("span.light-name", {}, m.name)))),
-      el("p.light-note", {}, MODES.find((m) => m.id === cur)?.note),
+      el("p.light-note", {}, THEMES[s.theme] && !MODES.some((m) => m.id === s.theme) ? `${THEMES[s.theme].name} · ${THEMES[s.theme].note}` : MODES.find((m) => m.id === cur)?.note),
+      el("p.light-more-head", {}, "More themes"),
+      el("div.light-themes", {}, Object.entries(THEMES).filter(([k]) => !MODES.some((m) => m.id === k)).map(([k, t]) =>
+        el("button.light-theme" + (s.theme === k ? ".on" : ""), { title: t.note, "aria-pressed": String(s.theme === k), onclick: () => setTheme(k, anchor.isConnected ? anchor : null) },
+          el("span.theme-chip.sm", { style: { background: t.paper, color: t.ink } }, "Aa"), el("span", {}, t.name)))),
       cur === "night" || cur === "auto" || s.warm !== "off" ? el("label.light-warm", {},
         el("span", {}, "Warmth"),
         el("input", { type: "range", min: 0.1, max: 0.8, step: 0.05, value: s.warmth ?? 0.35, "aria-label": "Warmth of the night light",
           oninput: (e) => { out.textContent = `${Math.round(e.target.value * 100)}%`; document.documentElement.style.setProperty("--warmth", e.target.value); },
           onchange: (e) => store.setSettings({ warmth: Number(e.target.value) }) }), out) : null,
-      el("p.muted.small", {}, "Tip: tap the Luma logo to step through these."));
+      matchMedia("(hover: hover)").matches ? el("p.muted.small", {}, "Tip: Shift-click the logo to step to the next one.") : null);
   };
   const off = bus.on("settings", () => pop.isConnected && draw());
   const close = () => { pop.remove(); off(); document.removeEventListener("pointerdown", outside, true); document.removeEventListener("keydown", esc); };
   const esc = (e) => { if (e.key === "Escape") close(); };
-  const outside = (e) => { if (!pop.contains(e.target) && !e.target.closest(".brand, .light-btn")) close(); };
+  const outside = (e) => { if (!pop.contains(e.target) && !anchor.contains(e.target)) close(); };
+  pop.__anchor = anchor;
+  pop.__close = () => close();
   draw();
   document.body.append(pop);
   if (isNarrow()) pop.classList.add("sheet");
@@ -72,23 +87,20 @@ export function lightPopover(anchor) {
   return pop;
 }
 
-/** Tap: next mode. Long press or right-click: all of them. */
+/** Tap: choose the light you want (tap again to close). Shift-tap: step to the next one. */
 export function wireSwitch(btn) {
-  let timer = null, long = false;
-  btn.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
-    long = false;
-    timer = setTimeout(() => { long = true; lightPopover(btn); }, 520);
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (e.shiftKey) { cycleMode(btn); return; }
+    const open = document.querySelector(".light-pop");
+    if (open && open.__anchor === btn) { open.__close?.(); return; }
+    lightPopover(btn);
   });
-  const cancel = () => clearTimeout(timer);
-  btn.addEventListener("pointerup", cancel);
-  btn.addEventListener("pointerleave", cancel);
-  btn.addEventListener("click", (e) => { e.preventDefault(); if (long) { long = false; return; } cycleMode(btn); });
-  btn.addEventListener("contextmenu", (e) => { e.preventDefault(); cancel(); lightPopover(btn); });
+  btn.addEventListener("contextmenu", (e) => { e.preventDefault(); lightPopover(btn); });
+  btn.setAttribute("aria-haspopup", "dialog");
   const label = () => {
     const cur = MODES.find((m) => m.id === currentMode());
-    const next = MODES[(MODES.indexOf(cur) + 1) % MODES.length];
-    btn.title = `Light: ${cur.name}. Tap for ${next.name}; hold for all`;
+    btn.title = `Light: ${cur.name}. Tap to choose`;
     btn.setAttribute("aria-label", btn.title);
   };
   label();

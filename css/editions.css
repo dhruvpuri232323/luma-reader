@@ -1,0 +1,206 @@
+/* Luma Reader — how each kind of book is set (see js/core/typeset.js).
+   Every edition has its own typeface, running heads, page numbers, chapter
+   openings, drop caps and ornaments. Colours come from the paper and ink, so
+   every design works in the light, sepia and dark themes. */
+
+.bookview {
+  isolation: isolate;
+  white-space: normal; /* PDF.js styles any ".spread" as nowrap */
+  --ink-soft: color-mix(in srgb, var(--paper-ink) 58%, var(--paper));
+  --ink-faint: color-mix(in srgb, var(--paper-ink) 30%, var(--paper));
+  --rubric: #8E2B1B;
+  --swell: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 14'><path d='M4 7 Q58 4.4 106 6.5 L113 7 L106 7.5 Q58 9.6 4 7Z M236 7 Q182 4.4 134 6.5 L127 7 L134 7.5 Q182 9.6 236 7Z'/><path d='M120 1.6 L125.4 7 L120 12.4 L114.6 7Z'/></svg>");
+  --vine: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 26'><g fill='none' stroke='black' stroke-width='1.3' stroke-linecap='round'><path d='M98 13 C88 3 76 23 64 13 S40 3 28 13 S10 19 4 13'/><path d='M122 13 C132 3 144 23 156 13 S180 3 192 13 S210 19 216 13'/></g><g><path d='M110 3.5 C114.5 8 114.5 18 110 22.5 C105.5 18 105.5 8 110 3.5Z'/><path d='M100.5 13 C105 8.6 115 8.6 119.5 13 C115 17.4 105 17.4 100.5 13Z'/><ellipse cx='71' cy='8' rx='4.4' ry='1.8' transform='rotate(-32 71 8)'/><ellipse cx='45' cy='17.6' rx='4.4' ry='1.8' transform='rotate(28 45 17.6)'/><ellipse cx='149' cy='8' rx='4.4' ry='1.8' transform='rotate(32 149 8)'/><ellipse cx='175' cy='17.6' rx='4.4' ry='1.8' transform='rotate(-28 175 17.6)'/><circle cx='4' cy='13' r='1.7'/><circle cx='216' cy='13' r='1.7'/></g></svg>");
+}
+[data-theme="dark"] .bookview { --rubric: #DA8A6C; }
+.bk-flow h2 .ch-num, .bk-flow h2 .ch-sep, .bk-flow h2 .ch-title { font: inherit; }
+.bk-flow h2 .ch-sep { display: none; }
+.bk-flow h2 .ch-num { display: block; }
+.bk-flow h2 .ch-title { display: block; }
+/* an ornament drawn as a mask, so it takes the colour of the ink */
+.bk-orn { display: block; height: 14px; background: currentColor; -webkit-mask: var(--swell) center / contain no-repeat; mask: var(--swell) center / contain no-repeat; }
+
+/* ───────── Modern ───────── */
+.bookview[data-design="modern"] .bk-head, .bookview[data-design="modern"] .bk-foot { font: 600 10.5px/1.2 var(--ui); letter-spacing: .14em; text-transform: uppercase; }
+.bookview[data-design="modern"] .bk-foot { text-transform: none; letter-spacing: .03em; font-weight: 500; font-size: 11.5px; }
+.bookview[data-design="modern"] .run-f { grid-column: 2 !important; justify-self: center !important; }
+.bookview[data-design="modern"] .bk-flow h2 { font-family: var(--ui); font-weight: 700; text-align: left; font-size: 1.62em; line-height: 1.18; letter-spacing: -.012em; margin: 2.2em 0 1.2em; }
+.bookview[data-design="modern"] .bk-flow h2:first-child { margin-top: 1.2em; }
+.bookview[data-design="modern"] .bk-flow h2::before { content: ""; display: block; width: 2em; height: 3px; border-radius: 2px; background: var(--accent); margin-bottom: .9em; }
+.bookview[data-design="modern"] .bk-flow h2 .ch-num { font-size: .42em; letter-spacing: .2em; text-transform: uppercase; color: var(--accent); margin-bottom: .7em; font-weight: 700; }
+.bookview[data-design="modern"] .bk-flow h2 .ch-num:not([data-label])::before { content: "Chapter "; }
+.bookview[data-design="modern"] .bk-flow h3 { font-family: var(--ui); font-weight: 700; font-size: 1em; letter-spacing: .01em; }
+.bookview[data-design="modern"] .bk-break::before { color: var(--ink-faint); letter-spacing: .5em; }
+
+/* ───────── Paperback (trade) ───────── */
+.bookview[data-design="trade"] .bk-head { font: 400 12.5px/1.2 var(--bk-font); letter-spacing: .14em; font-variant-caps: all-small-caps; color: var(--ink-soft); }
+.bookview[data-design="trade"] .bk-head .run-f { font-variant-caps: normal; letter-spacing: 0; font-variant-numeric: oldstyle-nums; font-size: 13.5px; }
+.bookview[data-design="trade"] .bk-flow h2 { margin: calc(var(--bk-flow-h) * .14) 0 1.6em; font-weight: 400; font-size: 1.42em; font-style: italic; line-height: 1.2; }
+.bookview[data-design="trade"] .bk-flow h2:first-child { margin-top: calc(var(--bk-flow-h) * .12); }
+.bookview[data-design="trade"] .bk-flow h2 .ch-num { font-size: 0; font-style: normal; margin-bottom: .9rem; }
+.bookview[data-design="trade"] .bk-flow h2 .ch-num::after {
+  content: attr(data-words); font-size: calc(var(--bk-size) * .8); letter-spacing: .32em; text-transform: uppercase; color: var(--ink-soft);
+  padding-left: .32em; /* balance the tracking */
+}
+.bookview[data-design="trade"] .bk-flow h2 .ch-num[data-label]::after { content: attr(data-label) " " attr(data-words); }
+.bookview[data-design="trade"]:not(.no-drop) .bk-flow p.drop::first-letter { color: var(--paper-ink); font-size: 2.55em; line-height: .86; padding: .05em .06em 0 0; font-weight: 400; }
+.bookview[data-design="trade"] .bk-flow p.chap::first-line { font-variant-caps: small-caps; letter-spacing: .04em; }
+
+/* ───────── Fine press (hardcover) ───────── */
+.bookview[data-design="fine"] .bk-head { font: italic 400 12.5px/1.2 var(--bk-font); letter-spacing: .02em; color: var(--ink-soft); }
+.bookview[data-design="fine"] .bk-foot { font: 400 12.5px/1.2 var(--bk-font); color: var(--ink-soft); }
+.bookview[data-design="fine"] .bk-foot .run-f { grid-column: 2 !important; justify-self: center !important; font-variant-numeric: oldstyle-nums; letter-spacing: .06em; }
+.bookview[data-design="fine"] .bk-foot .run-f::before { content: "— "; }
+.bookview[data-design="fine"] .bk-foot .run-f::after { content: " —"; }
+.bookview[data-design="fine"] .bk-flow h2 { margin: calc(var(--bk-flow-h) * .2) 0 2em; font-weight: 400; font-size: 1em; letter-spacing: .2em; text-transform: uppercase; line-height: 1.5; }
+.bookview[data-design="fine"] .bk-flow h2:first-child { margin-top: calc(var(--bk-flow-h) * .17); }
+.bookview[data-design="fine"] .bk-flow h2 .ch-num { font-size: 0; letter-spacing: 0; margin-bottom: .55rem; }
+.bookview[data-design="fine"] .bk-flow h2 .ch-num::after { content: attr(data-roman); font-size: calc(var(--bk-size) * 2.3); letter-spacing: .06em; font-weight: 400; color: var(--paper-ink); }
+.bookview[data-design="fine"] .bk-flow h2::after {
+  content: ""; display: block; width: 9.5em; max-width: 70%; height: 12px; margin: 1.3em auto 0; background: var(--ink-soft);
+  -webkit-mask: var(--swell) center / contain no-repeat; mask: var(--swell) center / contain no-repeat;
+}
+.bookview[data-design="fine"]:not(.no-drop) .bk-flow p.drop::first-letter { color: var(--paper-ink); font-size: 3.5em; line-height: .8; padding: .06em .07em 0 0; font-weight: 400; }
+.bookview[data-design="fine"] .bk-flow p.chap::first-line { font-variant-caps: small-caps; letter-spacing: .05em; }
+.bookview[data-design="fine"] .bk-break::before { font-size: 1.25em; color: var(--ink-soft); letter-spacing: 0; }
+
+/* ───────── Pocket ───────── */
+.bookview[data-design="pocket"] .bk-head { font: 600 10px/1.2 var(--bk-font); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+.bookview[data-design="pocket"] .bk-head > span { border-bottom: .5px solid var(--ink-faint); padding-bottom: 5px; }
+.bookview[data-design="pocket"] .bk-head .run-f { font-size: 11px; letter-spacing: 0; }
+.bookview[data-design="pocket"] .bk-flow h2 { font-weight: 700; font-size: 1.2em; margin: 1.1em 0 .9em; letter-spacing: .01em; }
+.bookview[data-design="pocket"] .bk-flow h2:first-child { margin-top: .5em; }
+.bookview[data-design="pocket"] .bk-flow h2 .ch-num { font-size: .7em; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-soft); margin-bottom: .2em; }
+.bookview[data-design="pocket"] .bk-flow p { text-indent: 1.1em; }
+.bookview[data-design="pocket"] .bk-flow p.first, .bookview[data-design="pocket"] .bk-flow p.cont { text-indent: 0; }
+.bookview[data-design="pocket"] .bk-flow p.chap::first-line { text-transform: uppercase; letter-spacing: .05em; font-size: .9em; }
+.bookview[data-design="pocket"] .bk-break { margin: .5em 0; }
+
+/* ───────── Antique ───────── */
+.bookview[data-design="antique"] { --ink-soft: color-mix(in srgb, var(--paper-ink) 70%, var(--paper)); }
+.bookview[data-design="antique"] .bk-flow { font-feature-settings: "liga" 1, "dlig" 1; }
+.bookview[data-design="antique"] .bk-head { font: 400 13px/1.2 var(--bk-head-font); letter-spacing: .1em; color: var(--ink-soft); }
+.bookview[data-design="antique"] .bk-head > span { border-bottom: 1px solid var(--ink-faint); padding-bottom: 6px; box-shadow: 0 2px 0 -1px var(--paper), 0 3px 0 -1px var(--ink-faint); }
+.bookview[data-design="antique"] .bk-head .run-f { font-family: var(--bk-font); letter-spacing: 0; font-size: 14px; }
+.bookview[data-design="antique"] .bk-head .run-f::before { content: "["; } .bookview[data-design="antique"] .bk-head .run-f::after { content: "]"; }
+.bookview[data-design="antique"] .bk-foot { font: italic 400 14px/1.2 var(--bk-font); color: var(--ink-soft); letter-spacing: .02em; }
+.bookview[data-design="antique"] .bk-flow h2 { margin: calc(var(--bk-flow-h) * .1) 0 1.5em; font-weight: 400; font-size: 1.5em; font-style: italic; line-height: 1.25; }
+.bookview[data-design="antique"] .bk-flow h2:first-child { margin-top: calc(var(--bk-flow-h) * .06); }
+.bookview[data-design="antique"] .bk-flow h2::before {
+  content: ""; display: block; height: 1.05em; max-width: 13em; margin: 0 auto 1.1em; background: var(--paper-ink);
+  -webkit-mask: var(--vine) center / contain no-repeat; mask: var(--vine) center / contain no-repeat;
+}
+.bookview[data-design="antique"] .bk-flow h2 .ch-num { font-size: 0; font-style: normal; margin-bottom: .55rem; }
+.bookview[data-design="antique"] .bk-flow h2 .ch-num::after {
+  content: "Chapter " attr(data-roman) "."; font-family: var(--bk-head-font); font-size: calc(var(--bk-size) * .95); letter-spacing: .16em; color: var(--paper-ink);
+}
+.bookview[data-design="antique"] .bk-flow h2 .ch-num[data-label]::after { content: attr(data-label) " " attr(data-roman) "."; }
+.bookview[data-design="antique"] .bk-flow h2::after {
+  content: ""; display: block; width: 4.5em; height: 0; margin: .8em auto 0; border-top: 1px solid var(--ink-soft);
+}
+.bookview[data-design="antique"]:not(.no-drop) .bk-flow p.drop::first-letter {
+  float: left; color: var(--rubric); font-size: 3.7em; line-height: .78; font-weight: 400; padding: .08em .1em 0 0; margin: .02em .08em 0 0;
+  text-shadow: 0 0 .5px color-mix(in srgb, var(--rubric) 60%, transparent);
+}
+.bookview[data-design="antique"] .bk-flow p.chap::first-line { font-variant-caps: small-caps; letter-spacing: .06em; }
+.bookview[data-design="antique"] .bk-flow h3 { font-weight: 400; font-style: italic; font-size: 1.1em; text-align: center; }
+.bookview[data-design="antique"] .bk-break::before { font-size: 1.3em; color: var(--rubric); letter-spacing: 0; }
+.bookview[data-design="antique"] .bk-quote { border-left: 0; font-style: italic; padding-left: 0; margin-left: 1.6em; }
+.bk-flow .bk-quote { padding-right: .15em; }
+.bookview[data-design="antique"] .bk-flow p { text-indent: 1.3em; }
+.bookview[data-design="antique"] .bk-flow p.first, .bookview[data-design="antique"] .bk-flow p.cont { text-indent: 0; }
+
+/* ───────── Magazine ───────── */
+.bookview[data-design="magazine"] .bk-head { font: 800 10px/1.2 var(--ui); letter-spacing: .16em; text-transform: uppercase; color: var(--paper-ink); }
+.bookview[data-design="magazine"] .bk-head > span, .bookview[data-design="magazine"] .bk-foot > span { display: flex; align-items: baseline; gap: .9em; }
+.bookview[data-design="magazine"] .bk-head > span { border-top: 2.5px solid var(--paper-ink); padding-top: 7px; align-self: start; margin-top: 12px; }
+.bookview[data-design="magazine"].spread .bk-run-r, .bookview[data-design="magazine"] .bk-foot .bk-run-l:has(> .run-c:first-child) { justify-content: flex-end; }
+.bookview[data-design="magazine"] .bk-foot { font: 600 10.5px/1.2 var(--ui); letter-spacing: .1em; text-transform: uppercase; }
+.bookview[data-design="magazine"] .bk-foot .run-f { font-weight: 800; font-size: 12px; letter-spacing: 0; color: var(--paper-ink); }
+.bookview[data-design="magazine"] .bk-foot .run-t, .bookview[data-design="magazine"] .bk-foot .run-c { color: var(--ink-soft); }
+.bookview[data-design="magazine"] .bk-flow h2 {
+  font-family: var(--bk-head-font); font-weight: 800; font-size: 2.15em; line-height: 1.04; letter-spacing: -.015em; text-align: left; margin: 1.1em 0 .7em;
+}
+.bookview[data-design="magazine"] .bk-flow h2:first-child { margin-top: .15em; }
+.bookview[data-design="magazine"] .bk-flow h2 .ch-num {
+  font-family: var(--ui); font-size: .3em; font-weight: 800; letter-spacing: .22em; text-transform: uppercase; color: var(--accent); margin-bottom: .9em;
+  display: flex; align-items: center; gap: .8em;
+}
+.bookview[data-design="magazine"] .bk-flow h2 .ch-num:not([data-label])::before { content: "No. "; }
+.bookview[data-design="magazine"] .bk-flow h2 .ch-num::after { content: ""; flex: 1; height: 1.5px; background: currentColor; opacity: .5; }
+.bookview[data-design="magazine"] .bk-flow h3 { font-family: var(--ui); font-weight: 800; font-size: .82em; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+.bookview[data-design="magazine"]:not(.no-drop) .bk-flow p.drop::first-letter {
+  font-family: var(--bk-head-font); font-weight: 900; font-size: 3.6em; line-height: .8; padding: .06em .08em 0 0; color: var(--accent);
+}
+.bookview[data-design="magazine"] .bk-flow p.chap { font-size: 1.08em; }
+.bookview[data-design="magazine"] .bk-quote {
+  border: 0; border-top: 2px solid var(--accent); border-bottom: 2px solid var(--accent); padding: .55em 0; margin: .9em 0 1.1em;
+  font-family: var(--bk-head-font); font-size: 1.22em; line-height: 1.3; font-style: italic; font-weight: 500;
+}
+.bookview[data-design="magazine"] .bk-break::before { content: ""; display: inline-block; width: .5em; height: .5em; background: var(--accent); }
+.bookview[data-design="magazine"] .bk-flow p { text-indent: 1em; }
+.bookview[data-design="magazine"].cols2 .bk-flow { column-rule: 0; }
+
+/* ───────── E-reader ───────── */
+.bookview[data-design="ereader"] .bk-head, .bookview[data-design="ereader"] .bk-foot { font: 500 11px/1.2 var(--ui); letter-spacing: .02em; color: var(--ink-soft); }
+.bookview[data-design="ereader"] .bk-head > span { display: flex; align-items: baseline; }
+.bookview[data-design="ereader"].spread .bk-head .bk-run-r { justify-content: flex-end; }
+.bookview[data-design="ereader"] .run-f { grid-column: 2 !important; justify-self: center !important; }
+.bookview[data-design="ereader"] .bk-foot { position: relative; padding-bottom: 6px; }
+.bookview[data-design="ereader"] .bk-foot::after {
+  /* a thin progress line, like an e-reader's */
+  content: ""; position: absolute; left: 0; right: 0; bottom: 5px; height: 2px; border-radius: 2px;
+  background: linear-gradient(90deg, var(--ink-soft) calc(var(--bk-progress, 0) * 100%), var(--ink-faint) 0);
+  opacity: .55;
+}
+.bookview[data-design="ereader"] .bk-flow h2 { font-weight: 700; font-size: 1.38em; margin: 1.6em 0 1.1em; }
+.bookview[data-design="ereader"] .bk-flow h2 .ch-num { font-size: .62em; font-weight: 500; color: var(--ink-soft); margin-bottom: .35em; letter-spacing: .04em; }
+.bookview[data-design="ereader"] .bk-flow h2 .ch-num:not([data-label])::before { content: "Chapter "; }
+
+/* phones: a little less ceremony at chapter openings */
+.bookview.phone .bk-flow h2 { margin-top: 1.4em !important; }
+.bookview.phone[data-design="fine"] .bk-flow h2:first-child, .bookview.phone[data-design="trade"] .bk-flow h2:first-child { margin-top: calc(var(--bk-flow-h) * .08) !important; }
+.bookview.scroll .bk-flow h2 { margin-top: 2.4em !important; }
+
+/* ───────── covers and bindings (laptops and tablets, page layout) ───────── */
+.bookview.edged .bk-sheet::before {
+  content: ""; position: absolute; z-index: -1; inset: calc(-1 * var(--cover-pad, 12px)); border-radius: 7px; pointer-events: none;
+  background: var(--cover-bg, var(--cover)); box-shadow: var(--cover-shadow, 0 26px 50px -16px rgb(0 0 0 / .5));
+}
+.tab-pane[data-cover="none"] .bookview.edged .bk-sheet::before, .tab-pane:not(.feel-edges) .bk-sheet::before { display: none; }
+.tab-pane[data-cover="leather"] .bookview.edged .bk-sheet::before {
+  border-radius: 9px;
+  background:
+    radial-gradient(120% 90% at 30% 10%, rgb(255 210 160 / .14), transparent 60%),
+    var(--leather-grain, none),
+    linear-gradient(160deg, hsl(18 46% 24%), hsl(14 50% 15%));
+  background-size: 100% 100%, 180px 180px, 100% 100%;
+  box-shadow:
+    inset 0 0 0 4px rgb(0 0 0 / .18),
+    inset 0 0 0 5px rgb(214 176 98 / .55),
+    inset 0 0 0 6px rgb(120 80 30 / .45),
+    inset 0 0 0 8px transparent,
+    inset 0 0 0 9px rgb(214 176 98 / .28),
+    inset 0 2px 1px rgb(255 230 190 / .12),
+    0 30px 60px -18px rgb(20 8 0 / .7), 0 8px 18px -6px rgb(20 8 0 / .4);
+}
+.tab-pane[data-cover="cloth"] .bookview.edged .bk-sheet::before {
+  background:
+    repeating-linear-gradient(0deg, rgb(255 255 255 / .035) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgb(0 0 0 / .06) 0 1px, transparent 1px 3px),
+    radial-gradient(120% 90% at 30% 10%, rgb(255 255 255 / .1), transparent 60%),
+    var(--cover);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / .06), inset 0 2px 2px rgb(255 255 255 / .08), 0 30px 60px -18px rgb(0 0 0 / .6), 0 8px 18px -6px rgb(0 0 0 / .35);
+}
+.tab-pane[data-cover="paper"] .bookview.edged .bk-sheet::before {
+  border-radius: 4px; background: linear-gradient(160deg, color-mix(in srgb, var(--cover) 88%, white), var(--cover));
+  box-shadow: 0 24px 46px -18px rgb(0 0 0 / .45), 0 4px 10px -4px rgb(0 0 0 / .25);
+}
+.tab-pane[data-cover="device"] .bookview.edged .bk-sheet::before {
+  border-radius: 22px; background: linear-gradient(160deg, #2A2B2F, #17181B);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / .07), inset 0 1px 0 rgb(255 255 255 / .1), 0 30px 60px -18px rgb(0 0 0 / .6);
+}
+
+/* ───────── desks: what the book lies on ───────── */
+.tab-pane[data-desk] .bookview { background-color: var(--desk-color, var(--stage)); background-image: var(--desk, none); background-size: var(--desk-size, auto); }
+.tab-pane[data-desk="none"] .bookview { background-image: none; }

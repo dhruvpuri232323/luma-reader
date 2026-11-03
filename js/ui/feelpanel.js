@@ -3,7 +3,8 @@
 // texture and light. Saved with the book, so it feels the same on every device.
 import { el, setKids, isNarrow, bus } from "../core/util.js";
 import { store } from "../data/store.js";
-import { EDITIONS, TURNS, SPEEDS, PAPERS, TEXTURES, LIGHTS, SOUNDS, feelFor, setFeel, textureLayers, playTurn, autoEdition } from "../core/bookfeel.js";
+import { EDITIONS, TURNS, SPEEDS, STIFFNESS, PAPERS, TEXTURES, LIGHTS, SOUNDS, DESKS, feelFor, setFeel, textureLayers, deskLayers, playTurn, autoEdition } from "../core/bookfeel.js";
+import { DESIGNS, ORNAMENT_NAMES, FOLIOS } from "../core/typeset.js";
 import { icon } from "./icons.js";
 import { closeMenus, toast } from "./overlay.js";
 
@@ -52,7 +53,33 @@ export function feelPopover(anchor, tab) {
     const lightOut = el("span.pop-val", {}, `${Math.round(f.lightK * 100)}%`);
     const custom = el("details.feel-custom", { open, ontoggle: (e) => { open = e.target.open; localStorage.setItem("luma.feelCustom", open ? "1" : "0"); } },
       el("summary", {}, icon("edit", 16), el("span", {}, `Make this ${EDITIONS[f.edition].name.toLowerCase()} your own`)),
+      el("p.feel-sec", {}, "Pages"),
+      row("Page design", el("select.select.sm", { "aria-label": "Page design", onchange: (e) => set({ design: e.target.value }) },
+        Object.entries(DESIGNS).map(([k, D]) => el("option", { value: k, selected: f.design === k }, `${D.name} — ${D.note}`)))),
+      row("Columns", el("div.seg.small", { role: "group" }, [["auto", "Design's"], ["1", "One"], ["2", "Two"]].map(([v, l]) => {
+        const cur = own.cols == null ? "auto" : String(own.cols);
+        return el("button" + (cur === v ? ".on" : ""), { "aria-pressed": String(cur === v), onclick: () => set({ cols: v === "auto" ? null : Number(v) }) }, l);
+      }))),
+      row("Running heads", el("div.seg.small", { role: "group" }, [["on", "On"], ["off", "Off"]].map(([v, l]) => {
+        const cur = own.heads || "on";
+        return el("button" + (cur === v ? ".on" : ""), { "aria-pressed": String(cur === v), onclick: () => set({ heads: v === "on" ? null : "off" }) }, l);
+      }))),
+      row("Page numbers", el("select.select.sm", { "aria-label": "Page numbers", onchange: (e) => set({ folio: e.target.value === "auto" ? null : e.target.value }) },
+        Object.entries(FOLIOS).map(([k, l]) => el("option", { value: k, selected: (own.folio || "auto") === k }, l)))),
+      row("Drop caps", el("div.seg.small", { role: "group" }, [["auto", "Design's"], ["on", "On"], ["off", "Off"]].map(([v, l]) => {
+        const cur = own.drop == null ? "auto" : own.drop ? "on" : "off";
+        return el("button" + (cur === v ? ".on" : ""), { "aria-pressed": String(cur === v), onclick: () => set({ drop: v === "auto" ? null : v === "on" }) }, l);
+      }))),
+      row("Ornament", el("div.seg.small.orn-seg", { role: "group" }, Object.entries(ORNAMENT_NAMES).map(([v, l]) => {
+        const cur = own.ornament || "auto";
+        return el("button" + (cur === v ? ".on" : ""), { "aria-pressed": String(cur === v), title: v === "auto" ? "The design's own" : l, onclick: () => set({ ornament: v === "auto" ? null : v }) }, v === "auto" ? "Auto" : l);
+      }))),
+      el("p.feel-sec", {}, "Turning"),
       row("Page turn", seg("turn", TURNS, f.turn)),
+      f.turn === "curl" ? row("Paper", el("div.seg.small", { role: "group" }, Object.entries(STIFFNESS).map(([v, l]) => {
+        const cur = Object.keys(STIFFNESS).reduce((a, k) => (Math.abs(k - (f.stiffness || 1)) < Math.abs(a - (f.stiffness || 1)) ? k : a), "1");
+        return el("button" + (cur === v ? ".on" : ""), { "aria-pressed": String(cur === v), onclick: () => set({ stiffness: Number(v) }) }, l);
+      }))) : null,
       row("Speed", seg("speed", SPEEDS, f.speed)),
       row("Sound",
         el("select.select.sm", { "aria-label": "Page-turn sound", onchange: (e) => { set({ sound: e.target.value }); playTurn(e.target.value, { volume: f.volume }); } },
@@ -62,6 +89,7 @@ export function feelPopover(anchor, tab) {
           oninput: (e) => { volOut.textContent = `${Math.round(e.target.value * 100)}%`; },
           onchange: (e) => { set({ volume: Number(e.target.value) }); playTurn(f.sound, { volume: Number(e.target.value) }); } }), volOut),
       store.settings().pageSounds === false ? el("p.feel-hint", {}, "Page-turn sounds are off for every book in Settings → Reading.") : null,
+      el("p.feel-sec", {}, "Paper, light and desk"),
       row("Paper", el("div.swatches", {}, Object.entries(PAPERS).map(([k, P]) => el("button.swatch.paper-swatch" + (f.paper === k ? ".on" : ""), {
         style: { "--c": P.bg }, "aria-label": P.name, title: P.name, "aria-pressed": String(f.paper === k), onclick: () => set({ paper: k }),
       })))),
@@ -72,6 +100,14 @@ export function feelPopover(anchor, tab) {
         el("input", { type: "range", min: 0.2, max: 1, step: 0.05, value: f.lightK, "aria-label": "Strength of the light",
           oninput: (e) => { lightOut.textContent = `${Math.round(e.target.value * 100)}%`; tab.el.style.setProperty("--light-k", e.target.value); },
           onchange: (e) => set({ lightK: Number(e.target.value) }) }), lightOut) : null,
+      row("Desk", el("div.swatches", {}, Object.entries(DESKS).map(([k, name]) => {
+        const d = deskLayers(k, false);
+        return el("button.swatch.desk-swatch" + (f.desk === k ? ".on" : ""), {
+          style: { "--c": d?.color || "var(--stage)", backgroundImage: d ? d.image : "none", backgroundSize: d ? d.size : "auto" },
+          "aria-label": name, title: name, "aria-pressed": String(f.desk === k), onclick: () => set({ desk: k }),
+        });
+      }))),
+      row("Cover", seg("cover", { none: "None", paper: "Card", cloth: "Cloth", leather: "Leather", device: "Device" }, f.cover)),
       row("Page edges & cover", el("label.switch", {}, el("input", { type: "checkbox", role: "switch", checked: Boolean(f.edges), onchange: (e) => set({ edges: e.target.checked }) }), el("span.knob"))),
       el("p.feel-hint", {}, "Edges thicken on the left as you read; the cover shows around the pages on wider screens."));
 

@@ -16,7 +16,7 @@ export class TextBookModel {
     blocks.forEach((b, i) => {
       if ((b.type === "h" && b.level === 2 && chars > 300) || chars > PAGE_CHARS) push();
       startOf.set(i, this.pagesList.length + 1);
-      cur.push(b);
+      cur.push({ ...b, at: i });
       chars += b.type === "img" ? 500 : (b.text || "").length;
     });
     push();
@@ -29,9 +29,12 @@ export class TextBookModel {
     this.avgWords = Math.max(30, words / this.pagesList.length);
     this.bodySize = 10;
     this.looksScanned = false;
+    // the block each original block became (so a chapter mid-page can be reached exactly)
+    const idOf = new Map();
+    for (const b of all) if (b.at != null) idOf.set(b.at, b.id);
     this.toc = toc.length
-      ? toc.map((t) => ({ title: t.title, page: startOf.get(t.block) || 1, depth: t.depth || 0 }))
-      : all.filter((b) => b.type === "h").map((b) => ({ title: b.text, page: b.page, depth: b.level === 2 ? 0 : 1 }));
+      ? toc.map((t) => ({ title: t.title, page: startOf.get(t.block) || 1, depth: t.depth || 0, bid: idOf.get(t.block) }))
+      : all.filter((b) => b.type === "h").map((b) => ({ title: b.text, page: b.page, depth: b.level === 2 ? 0 : 1, bid: b.id }));
   }
 
   get numPages() { return this.pagesList.length; }

@@ -3,22 +3,23 @@
 // light, page turn and page-turn sound — and any of those can be changed for
 // that one book. Sounds are made on the device (no audio files to download).
 import { store } from "../data/store.js";
-import { resolvedTheme } from "./feel.js";
+import { resolvedTheme, paletteOf } from "./feel.js";
 
 // ───────── the editions ─────────
 export const EDITIONS = {
-  modern: { name: "Modern", note: "Clean pages, a quick slide", paper: "white", texture: "none", turn: "slide", sound: "soft", light: "none", lightK: 0.7, edges: false, cover: "none", weight: 1 },
-  paperback: { name: "Paperback", note: "Creamy pages that curl, a soft rustle", paper: "cream", texture: "grain", turn: "curl", sound: "paperback", light: "daylight", lightK: 0.7, edges: true, cover: "paper", weight: 1 },
-  hardcover: { name: "Hardcover", note: "Heavy ivory pages under a reading lamp", paper: "ivory", texture: "laid", turn: "flip", sound: "hardcover", light: "lamp", lightK: 0.75, edges: true, cover: "cloth", weight: 1.15 },
-  pocket: { name: "Pocket book", note: "Thin yellowed pages that flick", paper: "pulp", texture: "newsprint", turn: "curl", sound: "pulp", light: "none", lightK: 0.6, edges: true, cover: "paper", weight: 0.8 },
-  antique: { name: "Antique", note: "Old parchment by candlelight", paper: "parchment", texture: "parchment", turn: "flip", sound: "parchment", light: "candle", lightK: 0.8, edges: true, cover: "leather", weight: 1.3 },
-  magazine: { name: "Magazine", note: "Bright glossy pages by the window", paper: "bright", texture: "gloss", turn: "slide", sound: "glossy", light: "window", lightK: 0.65, edges: false, cover: "none", weight: 0.8 },
-  ereader: { name: "E-reader", note: "Calm grey screen, a gentle flash", paper: "eink", texture: "none", turn: "flash", sound: "off", light: "none", lightK: 0.6, edges: true, cover: "device", weight: 1 },
+  modern: { name: "Modern", note: "Clean white pages, a light curl", paper: "white", texture: "none", turn: "curl", sound: "soft", light: "none", lightK: 0.7, edges: false, cover: "none", weight: 0.9, stiffness: 1, design: "modern", desk: "none" },
+  paperback: { name: "Paperback", note: "Creamy pages that curl, a soft rustle", paper: "cream", texture: "grain", turn: "curl", sound: "paperback", light: "daylight", lightK: 0.7, edges: true, cover: "paper", weight: 1, stiffness: 0.9, design: "trade", desk: "none" },
+  hardcover: { name: "Hardcover", note: "Heavy ivory pages under a reading lamp", paper: "ivory", texture: "laid", turn: "curl", sound: "hardcover", light: "lamp", lightK: 0.75, edges: true, cover: "cloth", weight: 1.15, stiffness: 1.6, design: "fine", desk: "walnut" },
+  pocket: { name: "Pocket book", note: "Thin yellowed pages that flick", paper: "pulp", texture: "newsprint", turn: "curl", sound: "pulp", light: "none", lightK: 0.6, edges: true, cover: "paper", weight: 0.8, stiffness: 0.7, design: "pocket", desk: "none" },
+  antique: { name: "Antique", note: "An old book, set by hand, by candlelight", paper: "antique", texture: "antique", turn: "curl", sound: "parchment", light: "candle", lightK: 0.45, edges: true, cover: "leather", weight: 1.25, stiffness: 1.3, design: "antique", desk: "walnut" },
+  magazine: { name: "Magazine", note: "Bright glossy pages, columns and headlines", paper: "bright", texture: "gloss", turn: "curl", sound: "glossy", light: "window", lightK: 0.6, edges: false, cover: "none", weight: 0.8, stiffness: 0.8, design: "magazine", desk: "none" },
+  ereader: { name: "E-reader", note: "Calm grey screen, a gentle flash", paper: "eink", texture: "none", turn: "flash", sound: "off", light: "none", lightK: 0.6, edges: true, cover: "device", weight: 1, stiffness: 1, design: "ereader", desk: "none" },
 };
 
-export const TURNS = { flip: "Flip", curl: "Curl", slide: "Slide", fade: "Fade", flash: "E-ink", none: "Instant" };
+export const TURNS = { curl: "Page curl", flip: "Hard flip", slide: "Slide", fade: "Fade", flash: "E-ink", none: "Instant" };
 export const SPEEDS = { quick: ["Quick", 0.7], natural: ["Natural", 1], slow: ["Slow", 1.4] };
-const BASE_MS = { flip: 720, curl: 600, slide: 440, fade: 340, flash: 320, none: 0 };
+export const STIFFNESS = { 0.7: "Soft", 1: "Medium", 1.6: "Stiff" };
+const BASE_MS = { flip: 720, curl: 720, slide: 440, fade: 340, flash: 320, none: 0 };
 
 export const PAPERS = {
   white: { name: "White", bg: "#FFFFFF", ink: "#1F2328", tone: null },
@@ -27,10 +28,11 @@ export const PAPERS = {
   ivory: { name: "Ivory", bg: "#F7EFDC", ink: "#2A241B", tone: "#F7EDD6" },
   pulp: { name: "Aged", bg: "#F0E3C4", ink: "#2E281E", tone: "#EFE0BD" },
   parchment: { name: "Parchment", bg: "#ECDAB4", ink: "#36291A", tone: "#EAD5AA" },
+  antique: { name: "Old paper", bg: "#F1E6CC", ink: "#2E2217", tone: "#EFE2C4" },
   eink: { name: "Grey", bg: "#E8E8E3", ink: "#232323", tone: "#E6E6E0" },
 };
 
-export const TEXTURES = { none: "None", grain: "Fine grain", laid: "Laid", linen: "Linen", newsprint: "Newsprint", parchment: "Parchment", gloss: "Gloss" };
+export const TEXTURES = { none: "None", grain: "Fine grain", laid: "Laid", linen: "Linen", newsprint: "Newsprint", antique: "Aged", parchment: "Parchment", gloss: "Gloss" };
 export const LIGHTS = { none: "None", daylight: "Daylight", lamp: "Reading lamp", candle: "Candlelight", window: "Window" };
 
 export const SOUNDS = {
@@ -104,6 +106,23 @@ export function textureLayers(kind, dark = false) {
       image: [noise({ freq: 0.5, rgb: ink, slope: 2.6, cut: -1.82, seed: 3, size: 260 }), grain(1.2, 0.75)].join(", "),
       size: "260px 260px, 220px 220px",
     }; break;
+    case "antique": t = {
+      // old paper: it browns towards the edges, has a few faint foxing spots,
+      // a gentle unevenness and fine fibres — never blotchy
+      image: [
+        dark ? "radial-gradient(130% 100% at 50% 46%, transparent 60%, rgb(0 0 0 / .22) 100%)"
+          : "radial-gradient(135% 104% at 50% 46%, transparent 58%, rgb(150 100 42 / .10) 80%, rgb(122 76 24 / .24) 100%)",
+        "radial-gradient(7px 6px at 13% 88%, rgb(140 88 32 / .16), transparent)",
+        "radial-gradient(4px 4px at 84% 11%, rgb(140 88 32 / .15), transparent)",
+        "radial-gradient(16px 11px at 71% 79%, rgb(150 100 40 / .06), transparent)",
+        "radial-gradient(3px 3px at 33% 21%, rgb(120 76 26 / .16), transparent)",
+        "radial-gradient(5px 4px at 61% 34%, rgb(140 92 36 / .08), transparent)",
+        noise({ freq: 0.02, oct: 3, rgb: dark ? [1, 0.9, 0.7] : [0.46, 0.3, 0.1], slope: 0.22, cut: dark ? -0.14 : -0.1, size: 520, seed: 5 }),
+        grain(1, 0.7),
+      ].join(", "),
+      size: "100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 520px 520px, 220px 220px",
+      size2: "50% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 520px 520px, 220px 220px",
+    }; break;
     case "parchment": t = {
       image: [
         dark ? "radial-gradient(ellipse at 50% 45%, transparent 55%, rgb(0 0 0 / .25) 100%)" : "radial-gradient(ellipse at 50% 45%, transparent 52%, rgb(120 72 20 / .20) 100%)",
@@ -123,6 +142,53 @@ export function textureLayers(kind, dark = false) {
   texCache.set(key, t);
   return t;
 }
+
+// ───────── desks: what the book lies on ─────────
+export const DESKS = { none: "None", walnut: "Walnut", oak: "Oak", linen: "Linen", felt: "Green felt", slate: "Slate" };
+const deskCache = new Map();
+export function deskLayers(kind, dark = false) {
+  const key = kind + (dark ? ":d" : "");
+  if (deskCache.has(key)) return deskCache.get(key);
+  const vignette = `radial-gradient(130% 110% at 50% 40%, transparent 50%, rgb(0 0 0 / ${dark ? 0.5 : 0.32}) 100%)`;
+  const dim = dark ? "linear-gradient(rgb(0 0 0 / .45), rgb(0 0 0 / .45))" : null;
+  let d = null;
+  const wood = (base, dk, lt, seed) => ({
+    color: base,
+    image: [vignette, dim,
+      noise({ freq: "0.0045 0.16", oct: 3, rgb: dk, slope: 1.1, cut: -0.42, size: 700, seed }),
+      noise({ freq: "0.008 0.5", oct: 2, rgb: lt, slope: 0.9, cut: -0.5, size: 700, seed: seed + 7 }),
+      noise({ freq: 0.9, oct: 1, rgb: [0, 0, 0], slope: 0.4, cut: -0.24, size: 200, seed: 3 }),
+    ].filter(Boolean).join(", "),
+    size: [dim ? "100% 100%, 100% 100%" : "100% 100%", "700px 700px", "700px 700px", "200px 200px"].join(", "),
+  });
+  switch (kind) {
+    case "walnut": d = wood("#3B281C", [0.12, 0.06, 0.02], [0.55, 0.38, 0.24], 21); break;
+    case "oak": d = wood("#8C6A45", [0.3, 0.18, 0.07], [0.85, 0.7, 0.5], 33); break;
+    case "linen": d = {
+      color: "#D6CEBE",
+      image: [vignette, dim, "repeating-linear-gradient(0deg, rgb(90 70 40 / .07) 0 1px, transparent 1px 3px)", "repeating-linear-gradient(90deg, rgb(90 70 40 / .06) 0 1px, transparent 1px 3px)",
+        noise({ freq: 0.5, oct: 2, rgb: [0.3, 0.22, 0.12], slope: 0.7, cut: -0.36, size: 240, seed: 9 })].filter(Boolean).join(", "),
+      size: [dim ? "100% 100%, 100% 100%" : "100% 100%", "auto", "auto", "240px 240px"].join(", "),
+    }; break;
+    case "felt": d = {
+      color: "#294A3A",
+      image: [vignette, dim, noise({ freq: 0.85, oct: 2, rgb: [0.05, 0.12, 0.08], slope: 0.9, cut: -0.42, size: 220, seed: 4 }),
+        noise({ freq: 0.03, oct: 3, rgb: [0.5, 0.75, 0.6], slope: 0.3, cut: -0.14, size: 500, seed: 8 })].filter(Boolean).join(", "),
+      size: [dim ? "100% 100%, 100% 100%" : "100% 100%", "220px 220px", "500px 500px"].join(", "),
+    }; break;
+    case "slate": d = {
+      color: "#2C3237",
+      image: [vignette, dim, noise({ freq: 0.012, oct: 4, rgb: [0.6, 0.66, 0.7], slope: 0.45, cut: -0.2, size: 600, seed: 12 }),
+        noise({ freq: 0.7, oct: 2, rgb: [0, 0, 0], slope: 0.6, cut: -0.32, size: 220, seed: 2 })].filter(Boolean).join(", "),
+      size: [dim ? "100% 100%, 100% 100%" : "100% 100%", "600px 600px", "220px 220px"].join(", "),
+    }; break;
+    default: d = null;
+  }
+  deskCache.set(key, d);
+  return d;
+}
+
+const LEATHER = noise({ freq: 0.75, oct: 3, rgb: [0.05, 0.02, 0], slope: 1.1, cut: -0.5, size: 180, seed: 17 });
 
 // ───────── applying it to a reader tab ─────────
 const coverOf = (f, doc) => {
@@ -148,15 +214,24 @@ export function applyFeel(tab) {
   pane.dataset.turn = f.turn;
   pane.dataset.cover = f.cover;
   // the book's paper shows in the light theme (and in sepia when you chose it for this book)
-  const usePaper = !dark && f.paper !== "white" && (theme === "light" || f.explicitPaper);
+  // a named theme (Sage, Calm, Midnight…) brings its own paper, unless you chose this book's
+  const palette = paletteOf();
+  const plain = theme === "light" && !palette;
+  const usePaper = !dark && f.paper !== "white" && (plain || f.explicitPaper);
   if (usePaper) { st.setProperty("--paper", P.bg); st.setProperty("--paper-ink", P.ink); }
   else { st.removeProperty("--paper"); st.removeProperty("--paper-ink"); }
   // PDF pages: printed on the book's paper in the light theme (dark inverts the page; sepia tints it already)
-  const pdfPaper = theme === "light" || (theme === "sepia" && f.explicitPaper);
-  st.setProperty("--pdf-tone", (pdfPaper && P.tone) || "#FFFFFF");
+  const pdfPaper = plain || (!dark && f.explicitPaper);
+  const paletteTone = !dark && palette && !f.explicitPaper && theme === "light"; // Sage, Quiet: tint the PDF pages to match
+  st.setProperty("--pdf-tone", paletteTone ? "var(--paper)" : (pdfPaper && P.tone) || "#FFFFFF");
   const tex = textureLayers(f.texture, dark);
-  if (tex) { st.setProperty("--tex", tex.image); st.setProperty("--tex-size", tex.size); }
-  else { st.setProperty("--tex", "none"); st.setProperty("--tex-size", "auto"); }
+  if (tex) { st.setProperty("--tex", tex.image); st.setProperty("--tex-size", tex.size); st.setProperty("--tex-size-2", tex.size2 || tex.size); }
+  else { st.setProperty("--tex", "none"); st.setProperty("--tex-size", "auto"); st.setProperty("--tex-size-2", "auto"); }
+  const desk = deskLayers(f.desk, dark);
+  pane.dataset.desk = desk ? f.desk : "none";
+  if (desk) { st.setProperty("--desk", desk.image); st.setProperty("--desk-size", desk.size); st.setProperty("--desk-color", desk.color); }
+  else { st.removeProperty("--desk"); st.removeProperty("--desk-size"); st.removeProperty("--desk-color"); }
+  st.setProperty("--leather-grain", LEATHER);
   const pdfTex = f.texture === "gloss" || !pdfPaper ? null : textureLayers(f.texture, false);
   st.setProperty("--pdf-tex", pdfTex ? pdfTex.image : "none");
   st.setProperty("--pdf-tex-size", pdfTex ? pdfTex.size : "auto");
@@ -164,7 +239,7 @@ export function applyFeel(tab) {
   st.setProperty("--turn-ms", f.ms + "ms");
   st.setProperty("--cover", coverOf(f, tab.doc));
   pane.classList.toggle("feel-edges", Boolean(f.edges));
-  pane.classList.toggle("feel-tone", (pdfPaper && Boolean(P.tone)) || Boolean(pdfTex));
+  pane.classList.toggle("feel-tone", (pdfPaper && Boolean(P.tone)) || Boolean(pdfTex) || paletteTone);
   if (!pane.querySelector(":scope > .feel-light")) pane.append(Object.assign(document.createElement("div"), { className: "feel-light", ariaHidden: "true" }));
   if (f.sound !== "off") warmSound(f.sound);
   return f;

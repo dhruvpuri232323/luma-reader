@@ -11,7 +11,7 @@ import { BookView } from "./bookview.js";
 import { TextBookModel } from "./textmodel.js";
 import { parseEpub } from "../data/importers.js";
 import { feelFor, applyFeel } from "../core/bookfeel.js";
-import { turnPdf } from "./pageturn.js";
+import { turnPdf, pdfHand } from "./pageturn.js";
 import { wordAtPoint } from "./lookup.js";
 import { icon } from "../ui/icons.js";
 
@@ -44,6 +44,10 @@ export class Tab {
     if (!f) return;
     if (this.viewer && this.state === "ready" && (f.pdfPages || "scroll") !== this.pdfLayout) this.setPdfLayout(f.pdfPages || "scroll");
     this.book?.updateEdges();
+    // a new design (typeface, margins, columns…) sets the pages again
+    const sig = [f.design, f.cols, f.heads, f.folio, f.drop, f.ornament].join("|");
+    if (this.feelSig && sig !== this.feelSig) this.book?.relayout();
+    this.feelSig = sig;
   }
 
   get doc() { return store.get("docs", this.docId); }
@@ -217,10 +221,12 @@ export class Tab {
   #wirePaged() {
     const c = this.container;
     let acc = 0, lock = 0;
+    this.hand = pdfHand(this);
     c.addEventListener("wheel", (e) => {
       if (!this.paged || e.ctrlKey || e.metaKey || this.el.classList.contains("zoomed")) return;
       e.preventDefault();
-      if (performance.now() < lock) return;
+      if (this.hand.wheel(e)) return; // a two-finger swipe takes the page with it
+      if (performance.now() < lock || this.hand.busy) return;
       acc += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
       if (Math.abs(acc) > 60) {
         if (acc > 0) this.next(); else this.prev();
@@ -228,12 +234,22 @@ export class Tab {
         lock = performance.now() + 450;
       }
     }, { passive: false });
-    let down = null;
+    let down = null, held = false;
     c.addEventListener("pointerdown", (e) => {
-      if (!this.paged || e.button !== 0 || e.pointerType === "mouse") return;
+      if (!this.paged || e.button !== 0) return;
+      if (this.hand.down(e)) { held = true; return; }
+      if (e.pointerType === "mouse") return;
       down = { x: e.clientX, y: e.clientY, t: performance.now() };
     });
+    c.addEventListener("pointermove", (e) => {
+      if (!this.paged) return;
+      if (e.pointerType === "mouse" && !e.buttons) { this.hand.hover(e.clientX, e.clientY); return; }
+      if (held || (down && this.hand.move(e))) { held = true; if (down) down = null; this.hand.move(e); }
+    });
+    c.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && !held) this.hand.leave(); });
     c.addEventListener("pointerup", (e) => {
+      if (held) { held = false; this.hand.up(e); e.stopPropagation(); return; }
+      this.hand.up(e);
       if (!down) return;
       const d = down;
       down = null;
@@ -247,7 +263,7 @@ export class Tab {
       if (fx < 0.1 || (fx < 0.22 && !word)) { e.stopPropagation(); this.prev(); }
       else if (fx > 0.9 || (fx > 0.78 && !word)) { e.stopPropagation(); this.next(); }
     });
-    c.addEventListener("pointercancel", () => { down = null; });
+    c.addEventListener("pointercancel", () => { down = null; held = false; this.hand.cancel(); });
     this.pvPrev = el("button.bk-turn.pv-turn.prev", { "aria-label": "Previous page", onclick: () => this.prev() }, icon("left", 26));
     this.pvNext = el("button.bk-turn.pv-turn.next", { "aria-label": "Next page", onclick: () => this.next() }, icon("right", 26));
     this.el.append(this.pvPrev, this.pvNext);
@@ -290,6 +306,8 @@ export class Tab {
 
   #useOcr(pages, { fresh }) {
     this.model.useOcr(pages);
+    this.structure = null; // its chapters can be found now
+    this.marks = null;
     this.ocrPages = pages;
     this.ocrJob = null;
     // the words go over the page images in Page view, and into search

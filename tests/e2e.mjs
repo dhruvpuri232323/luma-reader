@@ -322,8 +322,8 @@ async function pointAtWord(page, word, pageNo = 1) {
 /** A word on the visible Book view spread. */
 async function bookWord(page, word) {
   return page.evaluate((word) => {
-    const clip = document.querySelector(".tab-pane.active .bk-clip").getBoundingClientRect();
-    const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bk-flow"), NodeFilter.SHOW_TEXT);
+    const clip = document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-clip").getBoundingClientRect();
+    const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow"), NodeFilter.SHOW_TEXT);
     const hits = [];
     for (let n = w.nextNode(); n; n = w.nextNode()) {
       let i = n.data.indexOf(word);
@@ -435,6 +435,10 @@ await laptop.waitForSelector(".toc-item");
 await laptop.locator(".toc-item", { hasText: "The Committee" }).click();
 await laptop.waitForFunction(() => document.querySelector(".reader-bottom .page-input")?.value === "7");
 ok(true, "contents jumps to the chapter");
+await laptop.waitForTimeout(300);
+ok(/The Committee/.test(await laptop.locator(".nav-row.current").textContent()) && /own contents/.test(await laptop.locator(".nav-source").textContent()),
+  "the chapters view shows where you are, from the book's own contents");
+ok(await laptop.locator(".nav-back", { hasText: "Back to page 1" }).count() === 1, "…with a way back to where you were");
 await laptop.locator(".seg button", { hasText: "Notes" }).click();
 ok(/narrator had warned/.test(await laptop.locator(".side-panel .note-item").first().textContent()), "notes panel keeps spaces across line breaks");
 await laptop.keyboard.press("Control+f");
@@ -448,11 +452,11 @@ await laptop.locator(".side-panel .panel-head .icon-btn").click();
 await laptop.goto(BASE + `#/read/${twelve[10]}`);
 await laptop.waitForSelector(".tab-pane.active .textLayer span", { state: "attached" });
 await laptop.locator(".mode-seg button", { hasText: "Book" }).click();
-await laptop.waitForSelector(".tab-pane.active .bk-flow .bk-b");
+await laptop.waitForSelector(".tab-pane.active .bookview > .bk-sheet .bk-flow .bk-b");
 await laptop.waitForTimeout(400);
 ok(await laptop.locator(".tab-pane.active .bookview.spread").count() === 1, "Book view shows a two-page spread on a laptop");
-ok(await laptop.locator(".tab-pane.active .bk-flow h2", { hasText: "One: Dusk" }).count() === 1, "chapter headings are detected");
-const runningHeader = await laptop.locator(".tab-pane.active .bk-flow").textContent();
+ok(await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-flow h2", { hasText: "One: Dusk" }).count() === 1, "chapter headings are detected");
+const runningHeader = await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-flow").textContent();
 ok(!runningHeader.includes("The Lamplighter's Notebook"), "the PDF's own running header is removed from the text");
 await shot(laptop, "02-book-spread");
 const before = await laptop.evaluate(() => window.__luma.reader.tabs.get(window.__luma.reader.active).book.spread);
@@ -460,18 +464,18 @@ await laptop.keyboard.press("ArrowRight");
 await laptop.waitForTimeout(600);
 const after = await laptop.evaluate(() => window.__luma.reader.tabs.get(window.__luma.reader.active).book.spread);
 ok(after === before + 1, "arrow key turns the page");
-ok(/left in (chapter|book)/.test(await laptop.locator(".tab-pane.active .bk-foot").textContent()), "footer shows time left");
+ok(/left in (chapter|book)/.test(await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-foot").textContent()), "footer shows time left");
 
 // typography
-const fontBefore = await laptop.evaluate(() => getComputedStyle(document.querySelector(".tab-pane.active .bk-flow")).fontFamily);
+const fontBefore = await laptop.evaluate(() => getComputedStyle(document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow")).fontFamily);
 await laptop.locator('[data-action="type"]').click();
 await laptop.locator(".typo-pop .font-opt", { hasText: "EB Garamond" }).click();
-await laptop.waitForFunction(() => /EB Garamond/.test(getComputedStyle(document.querySelector(".tab-pane.active .bk-flow")).fontFamily));
+await laptop.waitForFunction(() => /EB Garamond/.test(getComputedStyle(document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow")).fontFamily));
 ok(true, `changing the typeface changes the book text (${fontBefore.split(",")[0]} → EB Garamond)`);
-const sizeBefore = await laptop.evaluate(() => parseFloat(getComputedStyle(document.querySelector(".tab-pane.active .bk-flow")).fontSize));
+const sizeBefore = await laptop.evaluate(() => parseFloat(getComputedStyle(document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow")).fontSize));
 await laptop.locator('.typo-pop [aria-label="More text size"]').click();
 await laptop.locator('.typo-pop [aria-label="More text size"]').click();
-await laptop.waitForFunction((s) => parseFloat(getComputedStyle(document.querySelector(".tab-pane.active .bk-flow")).fontSize) > s, sizeBefore);
+await laptop.waitForFunction((s) => parseFloat(getComputedStyle(document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow")).fontSize) > s, sizeBefore);
 ok(true, "text size buttons resize the book text");
 await shot(laptop, "03-book-typography");
 await laptop.keyboard.press("Escape");
@@ -502,8 +506,8 @@ await laptop.mouse.move(5, 500); await laptop.waitForTimeout(500);
 
 // unknown word → add your own meaning
 const sel = await laptop.evaluate(() => {
-  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bk-flow"), NodeFilter.SHOW_TEXT);
-  const clip = document.querySelector(".tab-pane.active .bk-clip").getBoundingClientRect();
+  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow"), NodeFilter.SHOW_TEXT);
+  const clip = document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-clip").getBoundingClientRect();
   for (let n = w.nextNode(); n; n = w.nextNode()) {
     const i = n.data.indexOf("lamplighter");
     if (i < 0) continue;
@@ -529,8 +533,8 @@ await laptop.keyboard.press("Escape");
 
 // look it up in the app: Wikipedia, your books, the web — no browser
 await laptop.evaluate(() => {
-  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bk-flow"), NodeFilter.SHOW_TEXT);
-  const clip = document.querySelector(".tab-pane.active .bk-clip").getBoundingClientRect();
+  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow"), NodeFilter.SHOW_TEXT);
+  const clip = document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-clip").getBoundingClientRect();
   for (let n = w.nextNode(); n; n = w.nextNode()) {
     const i = n.data.indexOf("lamplighter");
     if (i < 0) continue;
@@ -583,7 +587,7 @@ await laptop.waitForFunction(() => !document.querySelector(".research"));
 await laptop.evaluate(() => window.__luma.reader.tabs.get(window.__luma.reader.active).book.goToPage(1, { animate: false }));
 await laptop.waitForTimeout(300);
 await laptop.evaluate(() => {
-  const p = document.querySelector('.tab-pane.active .bk-flow p[data-page="1"]');
+  const p = document.querySelector('.tab-pane.active .bookview > .bk-sheet .bk-flow p[data-page="1"]');
   const t = p.firstChild; const i = t.data.indexOf("Adam Smith had argued");
   const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + "Adam Smith had argued".length);
   getSelection().removeAllRanges(); getSelection().addRange(r);
@@ -596,7 +600,7 @@ ok(true, "Book view highlight drawn");
 await laptop.locator(".mode-seg button", { hasText: "Page" }).click();
 await laptop.waitForSelector(".tab-pane.active .page[data-page-number='1'] .hl[data-color='sky']", { timeout: 8000 }).then(() => ok(true, "the same highlight appears on the original page"), () => ok(false, "the same highlight appears on the original page"));
 await laptop.locator(".mode-seg button", { hasText: "Book" }).click();
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b");
 ok(await laptop.evaluate(() => CSS.highlights.has("luma-vocab")), "saved words are underlined while reading");
 
 // ═════════════ Listening ═════════════
@@ -630,7 +634,7 @@ await laptop.waitForFunction(() => /Ready on this device/.test(document.querySel
   () => ok(true, "natural voice downloads and loads in the background worker"), () => ok(false, "natural voice downloads and loads in the background worker"));
 await shot(laptop, "08-settings-voices");
 await laptop.goto(BASE + `#/read/${twelve[10]}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b");
 await laptop.keyboard.press("l");
 await laptop.waitForSelector(".player");
 await laptop.waitForFunction(() => window.__luma.player.i >= 2, null, { timeout: 15000 }).then(
@@ -676,10 +680,16 @@ await settingsPage(laptop, "Reading");
 await laptop.waitForSelector(".typo-preview");
 const prevFont = await laptop.evaluate(() => getComputedStyle(document.querySelector(".typo-preview")).fontFamily);
 ok(/EB Garamond/.test(prevFont), "Settings preview shows the chosen typeface");
-await laptop.locator("#view-settings .typo .seg button", { hasText: /^Dark$/ }).click();
+await laptop.locator("#view-settings .theme-opt", { hasText: /^AaDark$/ }).click();
 ok(await within(laptop.waitForFunction(() => document.documentElement.dataset.theme === "dark")), "dark theme applies");
 await shot(laptop, "10-settings-dark");
-await laptop.locator("#view-settings .typo .seg button", { hasText: /^Light$/ }).click();
+await laptop.locator("#view-settings .theme-opt", { hasText: "Midnight" }).click();
+ok(await within(laptop.waitForFunction(() => document.documentElement.dataset.theme === "dark" && document.documentElement.dataset.palette === "dusk"
+  && getComputedStyle(document.documentElement).getPropertyValue("--paper").trim().toUpperCase() === "#152036")), "new reading themes: Midnight is a deep blue dark theme with cream text");
+await laptop.locator("#view-settings .theme-opt", { hasText: "Sage" }).click();
+ok(await within(laptop.waitForFunction(() => document.documentElement.dataset.theme === "light" && document.documentElement.dataset.palette === "sage")), "…and Sage is a pale green light theme");
+await laptop.locator("#view-settings .theme-opt", { hasText: /^AaLight$/ }).click();
+ok(await within(laptop.waitForFunction(() => document.documentElement.dataset.theme === "light" && !document.documentElement.dataset.palette)), "back to the plain light theme");
 await settingsPage(laptop, "Account");
 await laptop.locator(".btn", { hasText: "Sign in with Google" }).click();
 await laptop.waitForSelector(".sync-chip[data-status='synced']", { timeout: 8000 });
@@ -697,7 +707,7 @@ await shot(phone, "11-phone-library");
 await phone.goto(BASE + `#/read/${twelve[10]}`);
 await phone.waitForSelector(".pane-msg input[type=file]", { state: "attached" });
 await phone.setInputFiles(".pane-msg input[type=file]", FIX("novel.pdf"));
-await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 15000 }).then(
+await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 15000 }).then(
   () => ok(true, "phone reopens the book in Book view, as last used"), () => ok(false, "phone reopens the book in Book view, as last used"));
 await phone.waitForTimeout(400);
 await shot(phone, "12-phone-book");
@@ -742,11 +752,11 @@ let ids = await docIds(laptop);
 
 // EPUB reading
 await laptop.goto(BASE + `#/read/${ids["The River Cottage"]}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 });
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 10000 });
 ok(/EPUB/.test(await laptop.locator(".mode-chip").textContent()), "EPUB opens straight into Book view");
-ok(await laptop.locator(".tab-pane.active .bk-flow h2", { hasText: "Chapter One" }).count() === 1, "EPUB chapters become headings");
+ok(await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-flow h2", { hasText: "Chapter One" }).count() === 1, "EPUB chapters become headings");
 await laptop.locator('[data-action="toc"]').click();
-await laptop.locator(".side-panel .seg button", { hasText: "Contents" }).click();
+await laptop.locator(".side-panel .seg button", { hasText: "Chapters" }).click();
 await laptop.locator(".toc-item", { hasText: "Morning" }).click();
 await laptop.waitForFunction(() => window.__luma.reader.tabs.get(window.__luma.reader.active).currentPage() === 2, null, { timeout: 5000 }).then(
   () => ok(true, "EPUB table of contents jumps to the chapter"), () => ok(false, "EPUB table of contents jumps to the chapter"));
@@ -759,10 +769,10 @@ await laptop.setInputFiles("#file-input", [FIX("realbook.epub")]);
 await laptop.waitForFunction(() => document.querySelectorAll(".book").length === 6, null, { timeout: 10000 });
 ids = await docIds(laptop);
 await laptop.goto(BASE + `#/read/${ids["The Glass Partnership"]}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 });
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 10000 });
 await laptop.waitForTimeout(400);
 const real = await laptop.evaluate(() => {
-  const f = document.querySelector(".tab-pane.active .bk-flow");
+  const f = document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow");
   return { h: [...f.querySelectorAll("h2")].map((x) => x.textContent), breaks: f.querySelectorAll(".bk-break").length, fn: [...f.querySelectorAll(".fn")].map((x) => x.dataset.text), quote: f.querySelectorAll(".bk-quote").length, text: f.textContent };
 });
 ok(real.h.includes("1: A Purposeful Life") && real.h.includes("Chapter 2: The Demo"), "chapter number and title on separate lines become one heading");
@@ -777,7 +787,7 @@ await laptop.waitForFunction(() => /trial began|memo|Lena kept/.test(window.__lu
 ok(await laptop.evaluate(async () => (await import("/js/reader/player.js")).speechText("AFTER ALL THE DELAYS, the partnership")) === "After all the delays, the partnership", "capitals used for emphasis are read as words, not spelled out");
 await laptop.locator('.player [aria-label="Stop reading aloud"]').click();
 await laptop.goto(BASE + `#/read/${ids["The River Cottage"]}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 });
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 10000 });
 
 // character voices with the natural voice
 await laptop.evaluate(async () => { const v = await import("/js/core/voice.js"); v.prefs.engine = "natural"; await v.loadNatural(); });
@@ -825,7 +835,7 @@ await laptop.waitForSelector(".audiobook-dialog .voice-option");
 await shot(laptop, "17b-audiobook-choices");
 const [wav] = await Promise.all([laptop.waitForEvent("download", { timeout: 30000 }), (async () => {
   await laptop.locator(".audiobook-dialog .voice-option").first().click();
-  await laptop.waitForSelector(".task-card", { timeout: 3000 }).then(() => ok(true, "audiobook progress shows in a corner card while you keep reading"), () => ok(false, "audiobook progress shows in a corner card while you keep reading"));
+  await laptop.waitForSelector(".task-card", { state: "attached", timeout: 6000 }).then(() => ok(true, "audiobook progress shows in a corner card while you keep reading"), () => ok(false, "audiobook progress shows in a corner card while you keep reading"));
   ok(await laptop.locator("dialog[open]").count() === 0, "saving audio doesn't block the page");
 })()]);
 ok(/\.wav$/.test(wav.suggestedFilename()), `the chapter downloads as an audio file (${wav.suggestedFilename()})`);
@@ -834,9 +844,9 @@ ok(/\.wav$/.test(wav.suggestedFilename()), `the chapter downloads as an audio fi
 await laptop.goto(BASE + `#/read/${ids["Notes on Lamps"]}`);
 await laptop.waitForSelector(".tab-pane.active .textLayer span", { state: "attached" });
 await laptop.locator(".mode-seg button", { hasText: "Book" }).click();
-await laptop.waitForSelector(".tab-pane.active .bk-flow .fn", { timeout: 8000 }).then(() => ok(true, "footnote markers are found in a PDF"), () => ok(false, "footnote markers are found in a PDF"));
-ok(!/Contemporary accounts/.test(await laptop.locator(".tab-pane.active .bk-flow").textContent()), "footnote text is lifted out of the running text");
-await laptop.locator(".tab-pane.active .bk-flow .fn").first().click();
+await laptop.waitForSelector(".tab-pane.active .bookview > .bk-sheet .bk-flow .fn", { timeout: 8000 }).then(() => ok(true, "footnote markers are found in a PDF"), () => ok(false, "footnote markers are found in a PDF"));
+ok(!/Contemporary accounts/.test(await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-flow").textContent()), "footnote text is lifted out of the running text");
+await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-flow .fn").first().click();
 await laptop.waitForSelector(".fn-pop.in");
 ok(/Contemporary accounts/.test(await laptop.locator(".fn-pop").textContent()), "tapping a marker pops the footnote up");
 await shot(laptop, "18-footnote");
@@ -852,7 +862,7 @@ await laptop.locator(".side-panel .panel-head .icon-btn").click();
 
 // the novel: words here, scroll layout, auto-scroll, curl, ruler
 await laptop.goto(BASE + `#/read/${twelve[10]}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b");
 await active(laptop, "(t) => t.book.goToPage(1, { animate: false })");
 await laptop.locator('[data-action="toc"]').click();
 await laptop.locator(".side-panel .seg button", { hasText: "Words" }).click();
@@ -871,8 +881,8 @@ await setSettings(laptop, { pageTurn: "curl" });
 await laptop.waitForTimeout(600);
 const spread0 = await active(laptop, "(t) => t.book.spread");
 await laptop.keyboard.press("ArrowRight");
-const curled = await laptop.waitForSelector(".tab-pane.active .turn-layer .turn-leaf", { state: "attached", timeout: 1000 }).then(() => true, () => false);
-await laptop.waitForTimeout(900);
+const curled = await laptop.waitForSelector(".tab-pane.active .curl-layer .curl-box.flap", { state: "attached", timeout: 1000 }).then(() => true, () => false);
+await laptop.waitForTimeout(1100);
 ok(curled && await active(laptop, "(t) => t.book.spread") === spread0 + 1, "page-curl turn");
 await setSettings(laptop, { pageTurn: "slide" });
 
@@ -898,12 +908,12 @@ await shot(laptop, "20a-book-feel");
 await laptop.keyboard.press("Escape");
 const heard1 = await sounds();
 await laptop.keyboard.press("ArrowRight");
-const flipped = await laptop.waitForSelector(".tab-pane.active .turn-layer .turn-leaf", { state: "attached", timeout: 1000 }).then(() => true, () => false);
-await laptop.waitForTimeout(250);
+const flipped = await laptop.waitForSelector(".tab-pane.active .curl-layer .curl-box.flap", { state: "attached", timeout: 1000 }).then(() => true, () => false);
+await laptop.waitForTimeout(300);
 await shot(laptop, "20b-hardcover-turn");
-await laptop.waitForTimeout(1000);
-ok(flipped && await sounds() > heard1, "a hardcover page flips over the spine, with a heavier page sound");
-ok(!(await laptop.locator(".tab-pane.active .turn-layer").count()), "the turn cleans up after itself");
+await laptop.waitForTimeout(1100);
+ok(flipped && await sounds() > heard1, "a hardcover page turns over by its corner, with a heavier page sound");
+ok(!(await laptop.locator(".tab-pane.active .curl-layer, .tab-pane.active .turn-layer").count()), "the turn cleans up after itself");
 await laptop.locator(".feel-btn").click();
 await laptop.waitForSelector(".feel-pop.in");
 if (!(await laptop.locator(".feel-custom[open]").count())) await laptop.locator(".feel-custom > summary").click();
@@ -919,10 +929,10 @@ const flashed = await laptop.waitForSelector(".tab-pane.active .turn-flash", { s
 await laptop.waitForTimeout(700);
 ok(flashed && await sounds() === heard2 && await laptop.evaluate(() => document.querySelector(".tab-pane.active").dataset.light) === "candle", "an e-ink flash, candlelight, and silence when the sound is off");
 await laptop.goto(BASE + `#/read/${ids["The River Cottage"]}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b");
 ok(await laptop.evaluate(() => document.querySelector(".tab-pane.active").dataset.edition) === "paperback", "other books keep their own feel (an EPUB starts as a paperback)");
 await laptop.goto(BASE + `#/read/${feelDoc}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b");
 await laptop.evaluate(async (id) => (await import("/js/core/bookfeel.js")).setFeel(id, {}, { replace: true }), feelDoc);
 await laptop.waitForFunction(() => document.querySelector(".tab-pane.active").dataset.edition === "modern");
 ok(true, "“Back to the default” returns the book to how it was");
@@ -944,7 +954,7 @@ await laptop.waitForTimeout(700);
 const pv0 = await active(laptop, "(t) => t.viewer.currentPageNumber");
 const heard3 = await sounds();
 await laptop.keyboard.press("ArrowRight");
-const pvTurn = await laptop.waitForSelector(".tab-pane.active .turn-layer", { state: "attached", timeout: 1500 }).then(() => true, () => false);
+const pvTurn = await laptop.waitForSelector(".tab-pane.active .curl-layer, .tab-pane.active .turn-layer", { state: "attached", timeout: 1500 }).then(() => true, () => false);
 await laptop.waitForTimeout(450);
 await shot(laptop, "20c-pdf-spread-turn");
 await laptop.waitForTimeout(1200);
@@ -962,8 +972,195 @@ await laptop.evaluate(async (id) => (await import("/js/core/bookfeel.js")).setFe
 await laptop.waitForFunction(() => { const t = window.__luma.reader.tabs.get(window.__luma.reader.active); return !t.paged && t.viewer.scrollMode === 0; }, null, { timeout: 4000 })
   .then(() => ok(true, "…or back to one long scroll"), () => ok(false, "…or back to one long scroll"));
 await laptop.goto(BASE + `#/read/${feelDoc}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b");
 await laptop.waitForTimeout(400);
+
+// ═════════════ v4: a page you can take by the corner, editions set like the real thing ═════════════
+{
+  const bookId = ids["The Glass Partnership"];
+  const fonts0 = await laptop.evaluate(async () => (await import("/js/data/store.js")).store.settings().editionFonts);
+  await setSettings(laptop, { editionFonts: true });
+  await laptop.goto(BASE + `#/read/${bookId}`);
+  await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 10000 });
+  await laptop.mouse.move(700, 870);
+  const setEd = (ed, extra = {}) => laptop.evaluate(async ([id, ed, extra]) => (await import("/js/core/bookfeel.js")).setFeel(id, { edition: ed, ...extra }, { replace: true }), [bookId, ed, extra]);
+  const bv = () => laptop.evaluate(() => {
+    const v = document.querySelector(".tab-pane.active .bookview");
+    const f = v.querySelector(":scope > .bk-sheet .bk-flow");
+    const h2 = f.querySelector("h2 .ch-num")?.parentElement || f.querySelector("h2");
+    const drop = f.querySelector("p.drop");
+    return {
+      design: v.dataset.design, cols2: v.classList.contains("cols2"), cols: f.style.columnCount, font: getComputedStyle(f).fontFamily,
+      h2font: h2 ? getComputedStyle(h2).fontFamily : "", num: h2?.querySelector(".ch-num") ? getComputedStyle(h2.querySelector(".ch-num"), "::after").content + " | " + h2.querySelector(".ch-num").dataset.roman : "",
+      dropColor: drop ? getComputedStyle(drop, "::first-letter").color : "", catch: v.querySelectorAll(":scope > .bk-sheet .bk-foot .run-w").length,
+      heads: v.querySelector(":scope > .bk-sheet .bk-head").textContent, noHeads: v.classList.contains("no-heads"),
+    };
+  });
+  const firstSpread = () => active(laptop, "(t) => t.book.goToPage(1, { animate: false })");
+  await setEd("antique");
+  await until(laptop, () => document.querySelector(".tab-pane.active .bookview").dataset.design === "antique", null, { timeout: 4000 });
+  await firstSpread();
+  await laptop.keyboard.press("ArrowRight");
+  await laptop.waitForTimeout(1400);
+  const ant = await bv();
+  ok(ant.design === "antique" && /IM Fell English/.test(ant.font) && /Chapter I\./.test(ant.num) && ant.dropColor === "rgb(142, 43, 27)" && ant.catch >= 1,
+    `Antique is set like an old book: IM Fell type, “Chapter I.”, a red initial and catchwords (${ant.num}, ${ant.dropColor})`);
+  await shot(laptop, "40a-antique");
+  await setEd("hardcover");
+  await until(laptop, () => document.querySelector(".tab-pane.active .bookview").dataset.design === "fine", null, { timeout: 4000 });
+  const hc = await bv();
+  ok(/Libre Baskerville/.test(hc.font) && /^"I"/.test(hc.num), `a hardcover is set in Baskerville with roman chapter numerals (${hc.num})`);
+  await setEd("magazine");
+  await until(laptop, () => document.querySelector(".tab-pane.active .bookview").classList.contains("cols2"), null, { timeout: 4000 }).catch(() => {});
+  const mag = await bv();
+  ok(mag.design === "magazine" && mag.cols2 && mag.cols === "4" && /Playfair/.test(mag.h2font), `a magazine has two columns on each page and big Playfair headlines (${mag.cols} columns, ${mag.h2font.split(",")[0]})`);
+  await shot(laptop, "40b-magazine");
+  await setEd("paperback");
+  await until(laptop, () => document.querySelector(".tab-pane.active .bookview").dataset.design === "trade", null, { timeout: 4000 });
+  const pb = await bv();
+  ok(/EB Garamond/.test(pb.font) && pb.design !== mag.design && pb.font !== ant.font, `every edition looks different: a paperback is set in Garamond (${pb.font.split(",")[0]})`);
+
+  // taking the page by its corner
+  await firstSpread();
+  await laptop.waitForTimeout(500);
+  const spread0 = await active(laptop, "(t) => t.book.spread");
+  const r = await laptop.evaluate(() => { const b = document.querySelector(".tab-pane.active .bookview > .bk-sheet").getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom }; });
+  await laptop.mouse.move(r.r - 14, r.b - 14);
+  await laptop.waitForTimeout(400);
+  ok(await laptop.locator(".tab-pane.active .curl-layer").count() === 1, "hovering near a corner lifts it a little");
+  await laptop.mouse.down();
+  await laptop.mouse.move(r.r - 260, r.b - 50, { steps: 8 });
+  await laptop.waitForTimeout(200);
+  const mid = await laptop.evaluate(() => ({ flap: Boolean(document.querySelector(".tab-pane.active .curl-layer:not(.flat) .curl-box.flap .curl-back .curl-node")), busy: window.__luma.reader.tabs.get(window.__luma.reader.active).book.hand.busy }));
+  ok(mid.flap && mid.busy, "dragging the corner folds the page over, showing the next page on its back");
+  await shot(laptop, "40c-page-curl-drag");
+  await laptop.mouse.move(r.r - 760, r.b - 40, { steps: 6 });
+  await laptop.mouse.up();
+  await laptop.waitForTimeout(1000);
+  ok(await active(laptop, "(t) => t.book.spread") === spread0 + 1 && !(await laptop.locator(".tab-pane.active .curl-layer").count()), "let go past the middle and the page turns");
+  await laptop.mouse.move(r.r - 14, r.b - 14);
+  await laptop.waitForTimeout(300);
+  await laptop.mouse.down();
+  await laptop.mouse.move(r.r - 110, r.b - 30, { steps: 4 });
+  await laptop.waitForTimeout(300);
+  await laptop.mouse.up();
+  await laptop.waitForTimeout(900);
+  ok(await active(laptop, "(t) => t.book.spread") === spread0 + 1, "let go early and the page lies back down");
+  await laptop.mouse.move(r.l + 14, r.b - 14);
+  await laptop.waitForTimeout(300);
+  await laptop.mouse.down();
+  await laptop.mouse.move(r.l + 760, r.b - 40, { steps: 10 });
+  await laptop.mouse.up();
+  await laptop.waitForTimeout(1000);
+  ok(await active(laptop, "(t) => t.book.spread") === spread0, "the left page's corner turns back");
+  await laptop.mouse.move((r.l + r.r) / 2, r.t + 20);
+  for (let i = 0; i < 26; i++) { await laptop.mouse.wheel(22, 0); await laptop.waitForTimeout(16); }
+  await laptop.waitForTimeout(1100);
+  ok(await active(laptop, "(t) => t.book.spread") === spread0 + 1, "a two-finger swipe on the trackpad takes the page with it");
+
+  // pinch the text bigger, right on the page
+  const size0 = (await laptop.evaluate(async () => (await import("/js/data/store.js")).store.settings().reflowSize));
+  await laptop.keyboard.down("Control");
+  for (let i = 0; i < 8; i++) { await laptop.mouse.wheel(0, -6); await laptop.waitForTimeout(25); }
+  await laptop.keyboard.up("Control");
+  await laptop.waitForTimeout(150);
+  const pill = await laptop.locator(".tab-pane.active .bk-zoom-pill.on").textContent().catch(() => "");
+  await laptop.waitForTimeout(900);
+  const size1 = (await laptop.evaluate(async () => (await import("/js/data/store.js")).store.settings().reflowSize));
+  ok(size1 > size0 && /Text \d+ px/.test(pill), `pinching on the trackpad makes the text bigger (${size0} → ${size1} px) and keeps it`);
+  ok(Math.abs(await laptop.evaluate(() => document.documentElement.getBoundingClientRect().width) - 1440) < 2 && await laptop.evaluate(() => visualViewport.scale) === 1, "…without zooming the whole app");
+  await setSettings(laptop, { reflowSize: size0 });
+
+  // make it your own: columns, running heads, desk
+  await laptop.locator(".feel-btn").click();
+  await laptop.waitForSelector(".feel-pop.in");
+  if (!(await laptop.locator(".feel-custom[open]").count())) await laptop.locator(".feel-custom > summary").click();
+  await laptop.locator(".feel-row", { hasText: "Columns" }).locator("button", { hasText: "Two" }).click();
+  await laptop.locator(".feel-row", { hasText: "Running heads" }).locator("button", { hasText: "Off" }).click();
+  await laptop.locator(".feel-row", { hasText: "Desk" }).locator('button[aria-label="Green felt"]').click();
+  await until(laptop, () => { const v = document.querySelector(".tab-pane.active .bookview"); return v.classList.contains("cols2") && v.classList.contains("no-heads") && document.querySelector("#view-reader").dataset.desk === "felt"; }, null, { timeout: 4000 })
+    .then(() => ok(true, "columns, running heads and the desk can each be changed for one book"), () => ok(false, "columns, running heads and the desk can each be changed for one book"));
+  await laptop.keyboard.press("Escape");
+  await shot(laptop, "40d-custom");
+  await setEd("paperback");
+
+  // the progress bar: hover to see where, click to go there
+  await laptop.waitForTimeout(400);
+  const bar = await laptop.locator(".reader-bottom .scrub").boundingBox();
+  await laptop.mouse.move(bar.x + bar.width * 0.98, bar.y + bar.height / 2);
+  await laptop.waitForTimeout(200);
+  const tipText = await laptop.locator(".scrub-tip").textContent();
+  await laptop.mouse.down(); await laptop.mouse.up();
+  await laptop.waitForTimeout(900);
+  ok(/p\. \d/.test(tipText) && await active(laptop, "(t) => t.currentPage()") >= 2, `the progress bar shows where you'd go and takes you there (${tipText})`);
+
+  // calm reading: the controls fade while you read
+  await laptop.mouse.move(r.l - 30, (r.t + r.b) / 2);
+  await laptop.waitForTimeout(3300);
+  ok(await laptop.evaluate(() => document.documentElement.classList.contains("reader-calm")), "while you read, the controls fade away");
+  await laptop.mouse.move(700, 20);
+  await laptop.waitForTimeout(200);
+  ok(!(await laptop.evaluate(() => document.documentElement.classList.contains("reader-calm"))), "…and come back when you move towards them");
+  ok(laptop.errors.length === 0, "no errors in the new reading screen" + (laptop.errors.length ? ": " + laptop.errors.join(" | ") : ""));
+  await setSettings(laptop, { editionFonts: fonts0 });
+  await laptop.goto(BASE + `#/read/${feelDoc}`);
+  await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b");
+  await laptop.waitForTimeout(400);
+}
+
+// ═════════════ the chapters view: any book's structure ═════════════
+{
+  await laptop.goto(BASE + "#/library");
+  await laptop.waitForSelector(".book");
+  const n0 = await laptop.evaluate(async () => (await import("/js/data/store.js")).store.list("docs").length);
+  await laptop.setInputFiles("#file-input", [FIX("structured.pdf")]);
+  await until(laptop, async (n) => (await import("/js/data/store.js")).store.list("docs").length > n, n0, { timeout: 10000 });
+  const sid = await laptop.evaluate(async () => (await import("/js/data/store.js")).store.list("docs").find((d) => d.title === "The Long Crossing")?.id);
+  await laptop.goto(BASE + `#/read/${sid}`);
+  await laptop.waitForSelector(".tab-pane.active .page[data-page-number='1']", { state: "attached" });
+  await laptop.keyboard.press("c");
+  await laptop.waitForSelector(".nav-row");
+  const tree = await laptop.evaluate(() => [...document.querySelectorAll(".nav-row")].map((r) => `${r.getAttribute("aria-level")}:${r.querySelector(".nav-title").textContent}`));
+  ok(tree[0] === "1:Part One: Beginnings" && tree.includes("2:Chapter 1: The Harbour") && !tree.some((t) => /Long Crossing|no page/.test(t)),
+    "a nested outline becomes parts and chapters (the wrapper around everything and entries that point nowhere are left out)");
+  await laptop.locator(".nav-go", { hasText: "Chapter 4: Fog" }).click();
+  await laptop.waitForFunction(() => window.__luma.reader.tabs.get(window.__luma.reader.active).currentPage() === 17, null, { timeout: 5000 }).then(
+    () => ok(true, "click a chapter to go there"), () => ok(false, "click a chapter to go there"));
+  await laptop.locator(".nav-row", { hasText: "Chapter 1: The Harbour" }).locator("button.nav-twist").click();
+  ok(await laptop.locator(".nav-row", { hasText: "The quay" }).count() === 1, "parts open to show their chapters and sections");
+  await laptop.locator(".nav-filter").fill("lantern");
+  ok(await laptop.locator(".nav-row").count() === 2, "a long contents can be searched");
+  await laptop.locator(".nav-filter").fill("");
+  await active(laptop, "(t) => t.setMode('book')");
+  await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b");
+  await laptop.waitForTimeout(800);
+  await laptop.locator(".nav-go", { hasText: "Chapter 5: Lanterns" }).click();
+  await laptop.waitForTimeout(900);
+  const shown = await laptop.evaluate(() => { const c = document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-clip").getBoundingClientRect(); return [...document.querySelectorAll(".tab-pane.active .bookview > .bk-sheet h2")].filter((h) => { const r = h.getBoundingClientRect(); return r.width && r.left >= c.left - 2 && r.right <= c.right + 2; }).map((h) => h.textContent); });
+  ok(shown.includes("Chapter 5: Lanterns") && /Lanterns/.test(await laptop.locator(".nav-row.current").textContent()), "in Book view it opens on the chapter heading itself");
+  await laptop.keyboard.press("]");
+  await laptop.waitForTimeout(1200);
+  ok(/Home/.test(await laptop.locator(".nav-row.current").textContent()), "] and [ go to the next or previous chapter");
+  await shot(laptop, "41-chapters");
+  await laptop.keyboard.press("c");
+  // a PDF with no contents: chapters found in its headings; a scanned one: sections of pages
+  await laptop.goto(BASE + `#/read/${twelve[10]}`);
+  await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b, .tab-pane.active .page[data-page-number='1']", { state: "attached" });
+  const novel = await active(laptop, "async (t) => { t.structure = null; const s = await (await import('/js/reader/navigator.js')).bookStructure(t); return { source: s.source, titles: s.flat.map((e) => e.title) }; }");
+  ok(novel.source === "headings" && novel.titles.length === 4 && /Dusk/.test(novel.titles[0]), `a PDF without contents gets its chapters from its headings (${novel.titles.join(" · ")})`);
+  const sections = await laptop.evaluate(async () => {
+    const { bookStructure } = await import("/js/reader/navigator.js");
+    const fake = { pages: 120, model: { numPages: 120, looksScanned: true, toc: [], ready: async () => {}, page: async () => [], pageText: async () => "" } };
+    const s = await bookStructure(fake);
+    return { source: s.source, n: s.flat.length, first: s.flat[0].title, last: s.flat[s.flat.length - 1].title };
+  });
+  ok(sections.source === "pages" && sections.n <= 30 && sections.first === "Pages 1–5" && sections.last === "Pages 116–120", `a book with no chapters at all is split into sections of pages (${sections.n}: ${sections.first} … ${sections.last})`);
+  await laptop.evaluate(async (id) => (await import("/js/data/store.js")).store.remove("docs", id), sid);
+  ok(laptop.errors.length === 0, "no errors in the chapters view" + (laptop.errors.length ? ": " + laptop.errors.join(" | ") : ""));
+  await laptop.goto(BASE + `#/read/${feelDoc}`);
+  await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b");
+  await laptop.waitForTimeout(400);
+}
 
 // reading time: counted on its own, a timed session with a summary, and Insights
 await laptop.evaluate(() => { window.__LUMA_ACTIVITY_SPEED__ = 40; });
@@ -1006,13 +1203,14 @@ await laptop.locator("#view-insights .seg button", { hasText: "All time" }).clic
 await laptop.waitForFunction(() => document.querySelector("#view-insights .seg button.on")?.textContent === "All time" && document.querySelector(".ins-body"));
 ok(true, "…for the last 7 days, 30 days, this year or all time");
 
-// the logo is a light switch
-const mode0 = await laptop.evaluate(() => document.documentElement.dataset.mode);
+// the logo is a light switch: tap it and choose
 await laptop.locator(".rail .brand").click();
-await laptop.waitForFunction((m) => document.documentElement.dataset.mode !== m, mode0, { timeout: 3000 }).then(() => ok(true, "tapping the logo switches the light (Light, Sepia, Dark, Night light, Auto)"), () => ok(false, "tapping the logo switches the light (Light, Sepia, Dark, Night light, Auto)"));
-await laptop.locator(".rail .brand").click({ button: "right" });
 await laptop.waitForSelector(".light-pop.in");
-ok(await laptop.locator(".light-mode").count() === 5, "right-click (or long-press) shows every mode");
+ok(await laptop.locator(".light-mode").count() === 5 && await laptop.locator(".light-theme").count() === 6, "tapping the logo shows every light and theme to choose from");
+await laptop.locator(".light-mode", { hasText: "Sepia" }).click();
+await laptop.waitForFunction(() => document.documentElement.dataset.theme === "sepia", null, { timeout: 3000 }).then(() => ok(true, "choosing one switches to exactly that light"), () => ok(false, "choosing one switches to exactly that light"));
+await laptop.locator(".light-theme", { hasText: "Midnight" }).click();
+await laptop.waitForFunction(() => document.documentElement.dataset.palette === "dusk", null, { timeout: 3000 }).then(() => ok(true, "…or a reading theme, right there"), () => ok(false, "…or a reading theme, right there"));
 await laptop.locator(".light-mode", { hasText: "Night light" }).click();
 await laptop.waitForFunction(() => { const r = document.documentElement.dataset; return r.mode === "night" && r.theme === "dark" && r.warm === "1"; }, null, { timeout: 3000 })
   .then(() => ok(true, "Night light: the dark theme with a warm amber glow"), () => ok(false, "Night light: the dark theme with a warm amber glow"));
@@ -1021,15 +1219,15 @@ await shot(laptop, "20g-night-light");
 await laptop.keyboard.press("Escape");
 await setSettings(laptop, { theme: "light", warm: "off" });
 await laptop.goto(BASE + `#/read/${feelDoc}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b");
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b");
 await laptop.waitForTimeout(400);
 
 await laptop.keyboard.press("r");
 await laptop.waitForTimeout(200);
-const mid = await laptop.locator(".tab-pane.active .bk-clip").boundingBox();
+const mid = await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-clip").boundingBox();
 await laptop.mouse.move(mid.x + 80, mid.y + 120);
 await laptop.mouse.move(mid.x + 90, mid.y + 140);
-ok(await laptop.locator(".tab-pane.active .bk-ruler.on").count() === 1, "R turns on a reading ruler that follows the pointer");
+ok(await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-ruler.on").count() === 1, "R turns on a reading ruler that follows the pointer");
 await shot(laptop, "20-ruler");
 await laptop.keyboard.press("r");
 
@@ -1073,8 +1271,8 @@ await laptop.locator("#import-btn").click();
 await laptop.locator(".menu-item", { hasText: "web article" }).click();
 await laptop.locator("dialog input[type=url]").fill("https://example.com/slow-reading");
 await laptop.locator("dialog .btn.primary").click();
-await laptop.waitForSelector(".tab-pane.active .bk-flow h2", { timeout: 10000 });
-ok(/Article/.test(await laptop.locator(".mode-chip").textContent()) && /Slow Reading/.test(await laptop.locator(".tab-pane.active .bk-flow").textContent()), "a web article is fetched and set as a book");
+await laptop.waitForSelector(".tab-pane.active .bookview > .bk-sheet .bk-flow h2", { timeout: 10000 });
+ok(/Article/.test(await laptop.locator(".mode-chip").textContent()) && /Slow Reading/.test(await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-flow").textContent()), "a web article is fetched and set as a book");
 await shot(laptop, "23-article");
 await laptop.goto(BASE + "#/library");
 await laptop.locator("#import-btn").click();
@@ -1082,7 +1280,7 @@ await laptop.locator(".menu-item", { hasText: "Paste text" }).click();
 await laptop.locator("dialog .paste-title").fill("Kitchen notes");
 await laptop.locator("dialog .paste-text").fill("# Bread\n\nMix the flour and water the night before. Let it rest.\n\nIn the morning shape the loaf and bake it hot.");
 await laptop.locator("dialog .btn.primary").click();
-await laptop.waitForSelector(".tab-pane.active .bk-flow h2", { timeout: 8000 }).then(() => ok(true, "pasted text becomes a book"), () => ok(false, "pasted text becomes a book"));
+await laptop.waitForSelector(".tab-pane.active .bookview > .bk-sheet .bk-flow h2", { timeout: 8000 }).then(() => ok(true, "pasted text becomes a book"), () => ok(false, "pasted text becomes a book"));
 
 // search everything
 await laptop.goto(BASE + "#/library");
@@ -1094,7 +1292,7 @@ await laptop.waitForFunction(() => CSS.highlights.has("luma-find"), null, { time
 
 // notes: tags, star, export, quote card
 await laptop.evaluate(() => {
-  const p = [...document.querySelectorAll(".tab-pane.active .bk-flow p")].find((x) => x.textContent.includes("kettle"));
+  const p = [...document.querySelectorAll(".tab-pane.active .bookview > .bk-sheet .bk-flow p")].find((x) => x.textContent.includes("kettle"));
   const t = p.firstChild; const i = t.data.indexOf("The kettle is on");
   const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + "The kettle is on".length);
   getSelection().removeAllRanges(); getSelection().addRange(r);
@@ -1278,11 +1476,11 @@ await laptop.evaluate(async () => (await import("/js/ui/definition.js")).hideDef
 // selecting several words in a book
 const riverId = (await docIds(laptop))["The River Cottage"];
 await laptop.goto(BASE + `#/read/${riverId}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 15000 });
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 15000 });
 await laptop.waitForTimeout(600);
 const picked = await laptop.evaluate(() => {
-  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bk-flow"), NodeFilter.SHOW_TEXT);
-  const clip = document.querySelector(".tab-pane.active .bk-clip").getBoundingClientRect();
+  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow"), NodeFilter.SHOW_TEXT);
+  const clip = document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-clip").getBoundingClientRect();
   for (let n = w.nextNode(); n; n = w.nextNode()) {
     const i = n.data.indexOf("old cottage");
     if (i < 0) continue;
@@ -1334,15 +1532,15 @@ const scannedDoc = await laptop.evaluate(async () => (await import("/js/data/sto
 if (!(await laptop.locator(".ocr-card").count())) await laptop.goto(BASE + `#/read/${scannedDoc}`);
 await laptop.waitForSelector(".ocr-card", { timeout: 20000 }).then(() => ok(true, "a scanned PDF shows one progress screen while every page is read"), () => ok(false, "a scanned PDF shows one progress screen while every page is read"));
 await shot(laptop, "39-scan-progress");
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 120000 }).catch(() => {});
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 120000 }).catch(() => {});
 await laptop.waitForTimeout(600);
-const scannedText = (await laptop.locator(".tab-pane.active .bk-flow").innerText().catch(() => "")).replace(/\s+/g, " ");
+const scannedText = (await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-flow").innerText().catch(() => "")).replace(/\s+/g, " ");
 ok(/Critics called the ending ambiguous, yet its perspicacious narrator had warned us/.test(scannedText) && await laptop.locator(".ocr-card").count() === 0,
   "…then the whole book opens in Book view as text, paragraphs joined");
 ok(!/The Lamplighter's Notebook/.test(scannedText), "the scan's running header is left out of the text");
 await shot(laptop, "40-scan-book");
 const scanWord = await laptop.evaluate(() => {
-  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bk-flow"), NodeFilter.SHOW_TEXT);
+  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow"), NodeFilter.SHOW_TEXT);
   for (let n = w.nextNode(); n; n = w.nextNode()) {
     const i = n.data.indexOf("perspicacious");
     if (i < 0) continue;
@@ -1367,10 +1565,10 @@ ok(laptop.errors.length === 0, "no errors with scanned books" + (laptop.errors.l
 // ═════════════ Translation: English ⇄ Hindi, a passage or a whole book ═════════════
 const river = await laptop.evaluate(async () => (await import("/js/data/store.js")).store.list("docs").find((d) => d.title === "The River Cottage")?.id);
 await laptop.goto(BASE + `#/read/${river}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 15000 });
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 15000 });
 await laptop.waitForTimeout(500);
 const selectIn = (pg, phrase) => pg.evaluate((phrase) => {
-  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bk-flow"), NodeFilter.SHOW_TEXT);
+  const w = document.createTreeWalker(document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow"), NodeFilter.SHOW_TEXT);
   for (let n = w.nextNode(); n; n = w.nextNode()) {
     const i = n.data.indexOf(phrase);
     if (i < 0) continue;
@@ -1415,9 +1613,9 @@ await laptop.waitForSelector(".tr-pop .btn.primary", { timeout: 8000 }).catch(()
 ok(/English\s*→\s*हिन्दी/.test(await laptop.locator(".tr-pop .tr-pair").innerText().catch(() => "")), "an English book is translated into Hindi");
 await laptop.locator(".tr-pop .btn.primary").click();
 await laptop.waitForSelector(".tr-screen", { timeout: 8000 }).then(() => ok(true, "the whole book is translated first, behind one progress screen"), () => ok(false, "the whole book is translated first, behind one progress screen"));
-await laptop.waitForSelector(".tab-pane.active .bk-flow .bk-tr", { timeout: 60000 }).catch(() => {});
+await laptop.waitForSelector(".tab-pane.active .bookview > .bk-sheet .bk-flow .bk-tr", { timeout: 60000 }).catch(() => {});
 await laptop.waitForTimeout(500);
-ok(await laptop.locator('.tab-pane.active .bk-flow .bk-tr[lang="hi"]').count() >= 4, "…then each paragraph shows with its Hindi translation under it");
+ok(await laptop.locator('.tab-pane.active .bookview > .bk-sheet .bk-flow .bk-tr[lang="hi"]').count() >= 4, "…then each paragraph shows with its Hindi translation under it");
 await shot(laptop, "42-translated-both");
 ok(await until(laptop, async () => (await import("/js/data/store.js")).store.list("settings").some((r) => r.kind === "translation"), null, { timeout: 5000 }).then(() => true, () => false),
   "the translation is saved with your account, to read on your phone");
@@ -1426,7 +1624,7 @@ await laptop.waitForSelector(".tr-pop .tr-modes", { timeout: 8000 });
 await laptop.locator(".tr-pop .tr-modes button").nth(2).click();
 await laptop.waitForTimeout(800);
 await laptop.keyboard.press("Escape");
-ok(await laptop.evaluate(() => document.querySelector(".tab-pane.active .bk-flow").lang) === "hi" && /[\u0900-\u097F]/.test(await laptop.locator(".tab-pane.active .bk-flow p.bk-b").first().innerText()),
+ok(await laptop.evaluate(() => document.querySelector(".tab-pane.active .bookview > .bk-sheet .bk-flow").lang) === "hi" && /[\u0900-\u097F]/.test(await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-flow p.bk-b").first().innerText()),
   "or read the Hindi on its own");
 ok(await laptop.evaluate(() => Boolean(window.__luma.reader.tabs.get(window.__luma.reader.active).readModel)), "Listen then reads the Hindi (in a Hindi voice)");
 await shot(laptop, "43-translated-only");
@@ -1438,16 +1636,16 @@ await laptop.setInputFiles("#file-input", [FIX("hindi-scan.pdf")]);
 await until(laptop, async () => (await import("/js/data/store.js")).store.list("docs").some((d) => d.title === "hindi-scan"), null, { timeout: 10000 }).catch(() => {});
 const hindiDoc = await laptop.evaluate(async () => (await import("/js/data/store.js")).store.list("docs").find((d) => d.title === "hindi-scan")?.id);
 if (!(await laptop.locator(".tr-screen, .ocr-card").count())) await laptop.goto(BASE + `#/read/${hindiDoc}`);
-await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 120000 }).catch(() => {});
+await laptop.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 120000 }).catch(() => {});
 await laptop.waitForTimeout(500);
-const hindiText = (await laptop.locator(".tab-pane.active .bk-flow").innerText().catch(() => "")).replace(/\s+/g, " ");
+const hindiText = (await laptop.locator(".tab-pane.active .bookview > .bk-sheet .bk-flow").innerText().catch(() => "")).replace(/\s+/g, " ");
 ok(/नदी के किनारे एक पुरानी कुटिया थी/.test(hindiText), "a scanned Hindi page is read in Hindi (the right reading model is picked by itself)");
 await laptop.locator('.reader-actions [data-action="translate"]').click();
 await laptop.waitForSelector(".tr-pop .btn.primary", { timeout: 8000 }).catch(() => {});
 ok(/हिन्दी\s*→\s*English/.test(await laptop.locator(".tr-pop .tr-pair").innerText().catch(() => "")), "a Hindi book is translated into English");
 await laptop.locator(".tr-pop .btn.primary").click();
-await laptop.waitForSelector('.tab-pane.active .bk-flow .bk-tr[lang="en"]', { timeout: 60000 }).catch(() => {});
-ok((await laptop.locator('.tab-pane.active .bk-flow .bk-tr[lang="en"]').allInnerTexts()).join(" ").includes("river"), "…with the English under each Hindi paragraph");
+await laptop.waitForSelector('.tab-pane.active .bookview > .bk-sheet .bk-flow .bk-tr[lang="en"]', { timeout: 60000 }).catch(() => {});
+ok((await laptop.locator('.tab-pane.active .bookview > .bk-sheet .bk-flow .bk-tr[lang="en"]').allInnerTexts()).join(" ").includes("river"), "…with the English under each Hindi paragraph");
 await shot(laptop, "44-hindi-book-english");
 ok(laptop.errors.length === 0, "no errors with translation" + (laptop.errors.length ? ": " + laptop.errors.join(" | ") : ""));
 
@@ -1470,7 +1668,7 @@ await tablet.waitForFunction(() => document.querySelectorAll(".book").length >= 
   () => ok(true, "a new device gets the whole library from Drive — no Firebase"), () => ok(false, "a new device gets the whole library from Drive — no Firebase"));
 const tIds = await docIds(tablet);
 await tablet.goto(BASE + `#/read/${tIds["The River Cottage"]}`);
-await tablet.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 15000 }).then(
+await tablet.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 15000 }).then(
   () => ok(true, "books open on the new device without adding the file again"), () => ok(false, "books open on the new device without adding the file again"));
 await tablet.goto(BASE + "#/words");
 await tablet.waitForFunction(() => document.querySelectorAll(".word").length >= 3, null, { timeout: 8000 }).then(() => ok(true, "words came through Drive too"), () => ok(false, "words came through Drive too"));
@@ -1480,14 +1678,49 @@ ok(tablet.errors.length === 0, "no errors on tablet" + (tablet.errors.length ? "
 // phone: EPUB + scroll layout + practice on a small screen
 await phone.goto(BASE + "#/library");
 await phone.setInputFiles("#file-input", [FIX("story.epub")]);
-await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 }).catch(() => {});
-if (!(await phone.locator(".tab-pane.active .bookview:not([hidden]) .bk-b").count())) { await phone.goto(BASE + `#/read/${ids["The River Cottage"]}`); await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 10000 }); }
+await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 10000 }).catch(() => {});
+if (!(await phone.locator(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b").count())) { await phone.goto(BASE + `#/read/${ids["The River Cottage"]}`); await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 10000 }); }
 await shot(phone, "30-phone-epub");
+{
+  // the page follows your finger, and two fingers pinch the text
+  const layout0 = await phone.evaluate(async () => (await import("/js/data/store.js")).store.settings().bookLayout);
+  await setSettings(phone, { bookLayout: "pages" });
+  await phone.evaluate(async () => { const id = (await import("/js/data/store.js")).store.list("docs").find((d) => d.title === "The River Cottage")?.id; location.hash = `#/read/${id}`; });
+  await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 15000 });
+  await phone.waitForTimeout(800);
+  await phone.evaluate(async () => { const t = window.__luma.reader.tabs.get(window.__luma.reader.active); await (await import("/js/core/bookfeel.js")).setFeel(t.docId, { edition: "paperback" }, { replace: true }); await t.book.goToPage(1, { animate: false }); });
+  await phone.waitForTimeout(600);
+  const cdp = await phone.context().newCDPSession(phone);
+  const touch = (type, pts) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: pts.map(([x, y], i) => ({ x, y, id: i + 1 })) });
+  const pos = () => active(phone, "(t) => t.book.chunk * 1000 + t.book.spread");
+  const p0 = await pos();
+  await touch("touchStart", [[360, 600]]);
+  for (let i = 1; i <= 10; i++) { await touch("touchMove", [[360 - i * 22, 600 - i * 2]]); await phone.waitForTimeout(16); }
+  await phone.waitForTimeout(100);
+  const fingerCurl = await phone.locator(".tab-pane.active .curl-layer .curl-box.flap").count();
+  await shot(phone, "30c-phone-curl");
+  for (let i = 11; i <= 15; i++) { await touch("touchMove", [[360 - i * 22, 600 - i * 2]]); await phone.waitForTimeout(16); }
+  await touch("touchEnd", []);
+  await phone.waitForTimeout(1000);
+  ok(fingerCurl === 1 && await pos() > p0, "on the phone the page curls under your finger and turns");
+  const s0 = await phone.evaluate(async () => (await import("/js/data/store.js")).store.settings().reflowSize);
+  await touch("touchStart", [[170, 400], [230, 420]]);
+  for (let i = 1; i <= 6; i++) { await touch("touchMove", [[170 - i * 5, 400 - i * 3], [230 + i * 5, 420 + i * 3]]); await phone.waitForTimeout(30); }
+  await touch("touchEnd", []);
+  await phone.waitForTimeout(1000);
+  const s1 = await phone.evaluate(async () => (await import("/js/data/store.js")).store.settings().reflowSize);
+  ok(s1 > s0, `pinching with two fingers makes the text bigger (${s0} → ${s1} px)`);
+  await phone.evaluate(async (v) => (await import("/js/data/store.js")).store.setSettings({ reflowSize: v }), s0);
+  await phone.evaluate(async () => { const t = window.__luma.reader.tabs.get(window.__luma.reader.active); await (await import("/js/core/bookfeel.js")).setFeel(t.docId, {}, { replace: true }); });
+  await setSettings(phone, { bookLayout: layout0 });
+  await phone.waitForTimeout(500);
+  await cdp.detach();
+}
 await until(phone, async () => (await import("/js/data/store.js")).store.list("settings").some((r) => r.kind === "translation"), null, { timeout: 15000 }).catch(() => {});
 await phone.evaluate(async () => { const id = (await import("/js/data/store.js")).store.list("docs").find((d) => d.title === "The River Cottage")?.id; location.hash = `#/read/${id}`; });
-await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) .bk-b", { timeout: 15000 }).catch(() => {});
+await phone.waitForSelector(".tab-pane.active .bookview:not([hidden]) > .bk-sheet .bk-b", { timeout: 15000 }).catch(() => {});
 await phone.evaluate(async () => (await import("/js/ui/translatepanel.js")).setBookTranslation(window.__luma.reader.tabs.get(window.__luma.reader.active), "both"));
-await phone.waitForSelector('.tab-pane.active .bk-flow .bk-tr[lang="hi"]', { timeout: 10000 }).then(
+await phone.waitForSelector('.tab-pane.active .bookview > .bk-sheet .bk-flow .bk-tr[lang="hi"]', { timeout: 10000 }).then(
   () => ok(true, "the book translated on the laptop reads in Hindi on the phone"), () => ok(false, "the book translated on the laptop reads in Hindi on the phone"));
 await shot(phone, "30b-phone-translated");
 await phone.evaluate(async () => (await import("/js/ui/translatepanel.js")).setBookTranslation(window.__luma.reader.tabs.get(window.__luma.reader.active), "original"));
@@ -1518,7 +1751,10 @@ await phone.goto(BASE + "#/library");
 await phone.waitForSelector(".light-btn");
 const pm0 = await phone.evaluate(() => document.documentElement.dataset.mode);
 await phone.locator(".light-btn").click();
+await phone.waitForSelector(".light-pop.in");
+await phone.locator(".light-mode", { hasText: pm0 === "dark" ? "Light" : "Dark" }).first().click();
 await phone.waitForFunction((m) => document.documentElement.dataset.mode !== m, pm0, { timeout: 3000 }).then(() => ok(true, "phones get the light switch on the Library page"), () => ok(false, "phones get the light switch on the Library page"));
+await phone.keyboard.press("Escape");
 ok(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "no sideways overflow on the phone");
 ok(phone.errors.length === 0, "no errors on phone (v3)" + (phone.errors.length ? ": " + phone.errors.join(" | ") : ""));
 

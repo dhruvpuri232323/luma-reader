@@ -3,9 +3,10 @@
 // away. Book view (books set as text) and Page view (PDF pages) both use it.
 import { el, bus } from "../core/util.js";
 import { feelFor, playTurn } from "../core/bookfeel.js";
+import { PageCurl, CurlHand } from "./pagecurl.js";
 
 /** cloneNode(true), but canvases keep their pictures (cloneNode leaves them blank). */
-function copyOf(node) {
+export function copyOf(node) {
   const c = node.cloneNode(true);
   const from = node.querySelectorAll?.("canvas") || [];
   const to = c.querySelectorAll?.("canvas") || [];
@@ -147,7 +148,7 @@ function singleLeaf(layer, cover, { style, ms, dir, newNode, paper, play }) {
 // ───────── Page view (PDF pages) ─────────
 
 /** PDF pages on screen right now (in page-at-a-time modes, the page or spread). */
-function shownPages(tab) {
+export function shownPages(tab) {
   const c = tab.container.getBoundingClientRect();
   return [...tab.container.querySelectorAll(".pdfViewer .page")].filter((p) => {
     const r = p.getBoundingClientRect();
@@ -155,14 +156,15 @@ function shownPages(tab) {
   });
 }
 
-function unionRect(els) {
+export function unionRect(els) {
   const rs = els.map((e) => e.getBoundingClientRect());
   const left = Math.min(...rs.map((r) => r.left)), top = Math.min(...rs.map((r) => r.top));
-  return { left, top, width: Math.max(...rs.map((r) => r.right)) - left, height: Math.max(...rs.map((r) => r.bottom)) - top };
+  const right = Math.max(...rs.map((r) => r.right)), bottom = Math.max(...rs.map((r) => r.bottom));
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
 }
 
 /** A picture of PDF pages, laid out in `box` (screen coordinates). */
-function pictureOf(pages, box, tone) {
+export function pictureOf(pages, box, tone) {
   const pic = el("div.turn-pic", { style: { width: box.width + "px", height: box.height + "px" } });
   for (const p of pages) {
     const r = p.getBoundingClientRect();
@@ -182,7 +184,7 @@ function pictureOf(pages, box, tone) {
 }
 
 /** Wait (briefly) until the pages now on screen have been drawn. */
-async function pagesDrawn(tab, max = 450) {
+export async function pagesDrawn(tab, max = 450) {
   const t0 = performance.now();
   while (performance.now() - t0 < max) {
     await new Promise((r) => requestAnimationFrame(r));
@@ -206,9 +208,30 @@ export async function turnPdf(tab, dir, apply, { auto = false } = {}) {
   playTurn(f.sound, { dir, volume: f.volume * (auto ? 0.45 : 1) });
   const pages = shownPages(tab);
   if (f.turn === "none" || !pages.length || !tab.el.animate) return apply();
+  if (tab.hand?.busy || tab.turnPending) return;
   const host = tab.el.getBoundingClientRect();
   const box = unionRect(pages);
   const tone = tab.el.classList.contains("feel-tone");
+  if (f.turn === "curl") {
+    // the page taken by its corner and laid over (see pagecurl.js)
+    tab.hand?.unpeek(true);
+    const rect = { left: box.left - host.left, top: box.top - host.top, width: box.width, height: box.height };
+    const curl = new PageCurl(tab.el, rect, { dir, spread: pages.length === 2, oldNode: pictureOf(pages, box, tone), copy: copyOf, stiffness: f.stiffness || 1 });
+    tab.turnPending = true;
+    apply();
+    try {
+      if (v.currentPageNumber === before) { curl.finish(); return; }
+      await pagesDrawn(tab);
+    } finally { tab.turnPending = false; }
+    if (curl.done) return;
+    const now = shownPages(tab);
+    if (now.length !== pages.length) { curl.finish(); bus.emit("tab-page", tab); return; } // a cover page on its own: no leaf to turn
+    curl.ready(pictureOf(now, box, tone));
+    await curl.play(f.ms);
+    curl.finish();
+    bus.emit("tab-page", tab);
+    return;
+  }
   const turn = beginTurn(tab.el, { left: box.left - host.left, top: box.top - host.top, width: box.width, height: box.height }, pictureOf(pages, box, tone));
   apply();
   if (v.currentPageNumber === before) { turn.finish(); return; }
@@ -219,4 +242,40 @@ export async function turnPdf(tab, dir, apply, { auto = false } = {}) {
   const paper = getComputedStyle(tab.el).getPropertyValue("--pdf-tone").trim() || "#fff";
   await turn.run({ style: f.turn, ms: f.ms, dir, spread, newNode: pictureOf(now, now.length ? unionRect(now) : box, tone), paper });
   bus.emit("tab-page", tab);
+}
+
+/** Taking Page view's pages by hand (one page or two at a time). */
+export function pdfHand(tab) {
+  let box = null, before = 0;
+  const tone = () => tab.el.classList.contains("feel-tone");
+  return new CurlHand({
+    host: () => tab.el,
+    captureEl: () => tab.container,
+    pageRect: () => { const ps = shownPages(tab); return ps.length ? unionRect(ps) : null; },
+    spread: () => shownPages(tab).length === 2,
+    enabled: () => tab.paged && feelFor(tab.doc).turn === "curl" && !tab.el.classList.contains("zoomed") && !tab.turnPending,
+    canTurn: (dir) => {
+      const v = tab.viewer;
+      const ns = shownPages(tab).map((p) => Number(p.dataset.pageNumber));
+      if (!v || !ns.length) return false;
+      return dir > 0 ? Math.max(...ns) < v.pagesCount : Math.min(...ns) > 1;
+    },
+    snapshot: () => { const ps = shownPages(tab); box = unionRect(ps); return pictureOf(ps, box, tone()); },
+    begin: async (dir) => {
+      const v = tab.viewer;
+      before = v.currentPageNumber;
+      bus.emit("user-nav", tab);
+      tab.turnPending = true;
+      try { if (dir > 0) v.nextPage(); else v.previousPage(); await pagesDrawn(tab); } finally { tab.turnPending = false; }
+    },
+    fresh: () => pictureOf(shownPages(tab), box, tone()),
+    revert: async () => { tab.viewer.currentPageNumber = before; await pagesDrawn(tab); },
+    sound: (dir) => { const f = feelFor(tab.doc); playTurn(f.sound, { dir, volume: f.volume }); },
+    committed: () => bus.emit("tab-page", tab),
+    stiffness: () => feelFor(tab.doc).stiffness || 1,
+    copy: copyOf,
+    hotWidth: () => 60,
+    hasSelection: () => Boolean(document.getSelection()?.toString()),
+    turn: (dir) => (dir > 0 ? tab.next() : tab.prev()),
+  });
 }

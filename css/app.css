@@ -46,6 +46,48 @@
   --accent: #A06A10;
 }
 
+/* reading themes on top of the base themes (see THEMES in feel.js) */
+[data-theme][data-palette="calm"] {
+  --bg: #ECE3D2; --surface: #F5EEE1; --surface-2: #E3D8C3; --sunken: #DACDB5;
+  --ink: #4B4034; --ink-2: #64574A; --muted: #85776A; --line: #D7CAB2; --line-2: #C7B89D;
+  --paper: #EFE6D6; --paper-ink: #4B4034; --stage: #DFD3BD;
+  --shadow: 0 1px 2px rgb(70 50 20 / .07), 0 8px 24px -8px rgb(70 50 20 / .2);
+}
+[data-theme][data-palette="sage"] {
+  --bg: #E5ECE3; --surface: #F1F6EF; --surface-2: #DAE4D8; --sunken: #D0DCCE;
+  --ink: #223228; --ink-2: #3D5043; --muted: #5F7264; --line: #CCD8CA; --line-2: #B9C8B6;
+  --paper: #EAF1E8; --paper-ink: #1F2D23; --stage: #D3DED1;
+  --shadow: 0 1px 2px rgb(20 50 30 / .07), 0 8px 24px -8px rgb(20 50 30 / .2);
+}
+[data-theme][data-palette="quiet"] {
+  --bg: #D9DADC; --surface: #E7E8EA; --surface-2: #CFD1D4; --sunken: #C6C8CC;
+  --ink: #2A2C30; --ink-2: #45484E; --muted: #666A71; --line: #C4C6CA; --line-2: #B1B4B9;
+  --paper: #E4E5E3; --paper-ink: #2B2C2E; --stage: #CACBCE;
+  --shadow: 0 1px 2px rgb(0 0 0 / .07), 0 8px 24px -8px rgb(0 0 0 / .22);
+}
+[data-theme][data-palette="dusk"] {
+  --bg: #0F1626; --surface: #151E31; --surface-2: #1C2740; --sunken: #0B111D;
+  --ink: #E3E8F2; --ink-2: #B4BFD5; --muted: #8592AD; --line: #25304A; --line-2: #32405C;
+  --paper: #152036; --paper-ink: #E9E1CB; --stage: #0A0F1C;
+}
+[data-theme][data-palette="espresso"] {
+  --bg: #19130F; --surface: #211914; --surface-2: #2B221B; --sunken: #130E0B;
+  --ink: #EFE3D2; --ink-2: #CBB9A2; --muted: #9C8A75; --line: #382C23; --line-2: #48392E;
+  --paper: #231A14; --paper-ink: #EAD9BE; --stage: #110C09;
+}
+[data-theme][data-palette="black"] {
+  --bg: #000000; --surface: #0B0B0B; --surface-2: #161616; --sunken: #000000;
+  --ink: #E6E6E6; --ink-2: #B8B8B8; --muted: #8A8A8A; --line: #1E1E1E; --line-2: #2A2A2A;
+  --paper: #000000; --paper-ink: #CDCDCD; --stage: #000000;
+  --shadow: none; --shadow-lg: 0 0 0 1px #222;
+}
+
+/* a theme's own accent, unless you picked another */
+[data-palette="calm"][data-accent="lamp"] { --accent: #946A33; }
+[data-palette="sage"][data-accent="lamp"] { --accent: #3C7A52; --glow: #79C493; }
+[data-palette="dusk"][data-accent="lamp"] { --accent: #E6B85C; --glow: #F7D58C; }
+[data-palette="espresso"][data-accent="lamp"] { --accent: #E2A45B; --glow: #F3C17E; }
+
 [data-motion="reduce"] * { transition-duration: 0ms !important; animation-duration: 0ms !important; scroll-behavior: auto !important; }
 
 /* ───────── base ───────── */
@@ -470,6 +512,24 @@ input[type="range"] { accent-color: var(--accent); }
 .font-opt { display: grid; gap: 2px; padding: 10px 12px; border-radius: var(--r); border: 1px solid var(--line-2); background: var(--surface); text-align: left; }
 .font-opt:hover { border-color: var(--ink-2); }
 .font-opt.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.font-opt.edition-font { grid-column: 1 / -1; }
+.typo-tip { margin: -2px 0 4px; font-size: 11.5px; color: var(--muted); }
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; }
+.theme-grid.compact { grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.theme-opt { display: grid; justify-items: center; gap: 5px; padding: 6px 2px 5px; border-radius: 12px; border: 1px solid transparent; transition: background var(--t), border-color var(--t); }
+.theme-opt:hover { background: var(--surface-2); }
+.theme-opt.on { border-color: color-mix(in srgb, var(--accent) 65%, transparent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.theme-chip {
+  display: grid; place-items: center; width: 44px; height: 44px; border-radius: 10px; font: 600 16px/1 var(--serif);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / .12), 0 1px 3px rgb(0 0 0 / .12);
+}
+.theme-name { font-size: 11px; font-weight: 700; color: var(--ink-2); white-space: nowrap; }
+.theme-chip.sm { width: 26px; height: 26px; border-radius: 7px; font-size: 11px; }
+.light-more-head { margin: 10px 0 6px; font-size: var(--fs-xs); font-weight: 700; color: var(--ink-2); }
+.light-themes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 8px; }
+.light-theme { display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 5px; border-radius: 10px; border: 1px solid var(--line); font-size: var(--fs-xs); font-weight: 700; text-align: left; }
+.light-theme:hover { background: var(--surface-2); }
+.light-theme.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .font-name { font-size: 17px; line-height: 1.2; }
 .font-note { font-size: 12px; color: var(--muted); }
 .set-typo { padding: 16px 0 8px; }

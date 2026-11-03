@@ -10,7 +10,7 @@ const mem = Object.fromEntries(SYNCED.map((c) => [c, new Map()]));
 
 export const DEFAULT_SETTINGS = {
   id: "settings",
-  theme: "auto", // auto | light | dark | sepia
+  theme: "auto", // auto | light | sepia | dark, or a reading theme: calm | sage | quiet | dusk | espresso | black
   accent: "lamp", // lamp | tide | iris | fern | ember
   sounds: true,
   reduceMotion: false,
@@ -18,6 +18,11 @@ export const DEFAULT_SETTINGS = {
   hoverDelay: 450,
   tapLookup: true,
   reflowFont: "literata",
+  editionFonts: true, // each edition (paperback, antique, magazine…) sets the book in its own typeface
+  textWeight: "regular", // regular | medium | bold
+  letterSpacing: "normal", // tight | normal | loose
+  wordSpacing: "normal", // tight | normal | loose
+  hyphens: true,
   reflowSize: 19,
   reflowLeading: 1.6,
   reflowWidth: "balanced", // narrow | balanced | wide (text column width in Book view)
